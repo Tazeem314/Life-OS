@@ -145,10 +145,7 @@ function LifeOSAppContent() {
   return (
     <div className="min-h-screen bg-zinc-100/60 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans selection:bg-sky-500 selection:text-white transition-colors duration-200">
       {/* Top Navbar */}
-      <Navbar
-        onOpenNewHabit={handleOpenNewHabit}
-        onOpenNewTodo={() => handleOpenNewTodo()}
-      />
+      <Navbar />
 
       {/* Main Layout Body */}
       <div className="flex-1 flex max-w-7xl w-full mx-auto">

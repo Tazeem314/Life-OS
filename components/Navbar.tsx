@@ -1,16 +1,13 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useLifeOS } from '@/context/LifeOSContext';
 import { formatDisplayDate, getTodayKey } from '@/lib/date-utils';
 import {
   Flame,
-  Plus,
   Sun,
   Moon,
   Laptop,
-  CheckSquare,
-  Sparkles,
   Calendar as CalendarIcon,
   WifiOff,
   RefreshCw,
@@ -19,11 +16,11 @@ import { AuthButton } from '@/components/AuthButton';
 import { PWAInstallButton } from '@/components/PWAInstallButton';
 
 interface NavbarProps {
-  onOpenNewHabit: () => void;
-  onOpenNewTodo: () => void;
+  onOpenNewHabit?: () => void;
+  onOpenNewTodo?: () => void;
 }
 
-export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps) {
+export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps = {}) {
   const {
     overallStreaks,
     settings,
@@ -33,7 +30,6 @@ export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps) {
     isOnline,
     isSyncing,
   } = useLifeOS();
-  const [showAddMenu, setShowAddMenu] = useState(false);
 
   const toggleTheme = () => {
     if (settings.theme === 'light') {
@@ -82,7 +78,7 @@ export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps) {
           </div>
         </div>
 
-        {/* Right Section: Streak Counter, Theme Toggle, Install, Auth, Quick Add */}
+        {/* Right Section: Streak Counter, Theme Toggle, Install, Auth */}
         <div className="flex items-center gap-2">
           {/* Offline / Syncing Indicator */}
           {!isOnline ? (
@@ -137,59 +133,6 @@ export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps) {
 
           {/* Gmail / Google Login & User Profile */}
           <AuthButton />
-
-          {/* Quick Add Dropdown / Buttons */}
-          <div className="relative">
-            <div className="hidden sm:flex items-center gap-1.5">
-              <button
-                onClick={onOpenNewHabit}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/80 rounded-lg transition"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-                <span>Habit</span>
-              </button>
-              <button
-                onClick={onOpenNewTodo}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 active:bg-sky-700 rounded-lg shadow-xs transition"
-              >
-                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>To-Do</span>
-              </button>
-            </div>
-
-            {/* Mobile Quick Add Plus Button */}
-            <div className="sm:hidden relative">
-              <button
-                onClick={() => setShowAddMenu(!showAddMenu)}
-                className="p-2 rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition"
-                aria-label="Quick Add"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-
-              {showAddMenu && (
-                <div
-                  className="absolute right-0 mt-2 w-40 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl py-1 z-50 animate-in fade-in zoom-in-95 duration-100"
-                  onClick={() => setShowAddMenu(false)}
-                >
-                  <button
-                    onClick={onOpenNewHabit}
-                    className="w-full text-left px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 flex items-center gap-2"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-                    New Habit
-                  </button>
-                  <button
-                    onClick={onOpenNewTodo}
-                    className="w-full text-left px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 flex items-center gap-2"
-                  >
-                    <CheckSquare className="w-3.5 h-3.5 text-indigo-500" />
-                    New To-Do
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
         </div>
       </div>
     </header>
