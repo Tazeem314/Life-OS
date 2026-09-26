@@ -1,0 +1,104 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "email"]
+    },
+    "Habit": {
+      "title": "Habit",
+      "description": "User habit item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "icon": { "type": "string" },
+        "color": { "type": "string" },
+        "frequency": { "type": "string" },
+        "daysOfWeek": { "type": "array", "items": { "type": "number" } },
+        "targetPerWeek": { "type": "number" },
+        "startDate": { "type": "string" },
+        "status": { "type": "string" },
+        "reminderTime": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "frequency", "daysOfWeek", "startDate", "status"]
+    },
+    "HabitCompletion": {
+      "title": "HabitCompletion",
+      "description": "Record of a habit completed on a specific date",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "habitId": { "type": "string" },
+        "date": { "type": "string" },
+        "completedAt": { "type": "string" }
+      },
+      "required": ["id", "habitId", "date", "completedAt"]
+    },
+    "Todo": {
+      "title": "Todo",
+      "description": "User task item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "priority": { "type": "string" },
+        "dueTime": { "type": "string" },
+        "notes": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "order": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "date", "priority", "completed"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User configuration settings",
+      "type": "object",
+      "properties": {
+        "theme": { "type": "string" },
+        "animationsEnabled": { "type": "boolean" },
+        "reminderNotifications": { "type": "boolean" },
+        "userName": { "type": "string" }
+      },
+      "required": ["theme", "animationsEnabled", "reminderNotifications", "userName"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User account document"
+    },
+    "/users/{userId}/habits/{habitId}": {
+      "schema": "Habit",
+      "description": "Habit collection for the user"
+    },
+    "/users/{userId}/habitCompletions/{completionId}": {
+      "schema": "HabitCompletion",
+      "description": "Habit completion records for the user"
+    },
+    "/users/{userId}/todos/{todoId}": {
+      "schema": "Todo",
+      "description": "Todo tasks for the user"
+    },
+    "/users/{userId}/settings/{settingsId}": {
+      "schema": "UserSettings",
+      "description": "User configuration settings"
+    }
+  }
+}
