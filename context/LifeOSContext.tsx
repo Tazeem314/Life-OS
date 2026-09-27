@@ -20,7 +20,49 @@ import {
   HabitStreakInfo,
   OverallStreakInfo,
 } from '@/lib/types';
-import { Storage, INITIAL_SETTINGS, getInitialSeedData } from '@/lib/storage';
+import {
+  Storage,
+  INITIAL_SETTINGS,
+  getInitialSeedData,
+  DEMO_HABIT_IDS,
+  DEMO_TODO_IDS,
+  DEMO_COMPLETION_IDS,
+} from '@/lib/storage';
+
+const filterCleanHabits = (list: Habit[]) => (list || []).filter((h) => h && !DEMO_HABIT_IDS.has(h.id));
+const filterCleanCompletions = (list: HabitCompletion[]) =>
+  (list || []).filter((c) => c && !DEMO_COMPLETION_IDS.has(c.id) && !DEMO_HABIT_IDS.has(c.habitId));
+const filterCleanTodos = (list: Todo[]) => (list || []).filter((t) => t && !DEMO_TODO_IDS.has(t.id));
+
+const purgeCloudDemoItems = async (
+  userId: string,
+  rawHabits: Habit[],
+  rawCompletions: HabitCompletion[],
+  rawTodos: Todo[]
+) => {
+  if (!userId) return;
+  for (const h of rawHabits || []) {
+    if (h && DEMO_HABIT_IDS.has(h.id)) {
+      try {
+        await deleteHabitFromCloud(userId, h.id);
+      } catch {}
+    }
+  }
+  for (const c of rawCompletions || []) {
+    if (c && (DEMO_COMPLETION_IDS.has(c.id) || DEMO_HABIT_IDS.has(c.habitId))) {
+      try {
+        await deleteCompletionFromCloud(userId, c.id);
+      } catch {}
+    }
+  }
+  for (const t of rawTodos || []) {
+    if (t && DEMO_TODO_IDS.has(t.id)) {
+      try {
+        await deleteTodoFromCloud(userId, t.id);
+      } catch {}
+    }
+  }
+};
 import { getTodayKey, addDays } from '@/lib/date-utils';
 import {
   calculateDayProgress,
@@ -132,10 +174,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(() => new Date());
   const cloudDbName = firebaseConfig.firestoreDatabaseId || 'LifeOS Cloud Database';
 
-  // Core data state initialized deterministically to prevent hydration mismatch
-  const [habits, setHabits] = useState<Habit[]>(() => getInitialSeedData().habits);
-  const [completions, setCompletions] = useState<HabitCompletion[]>(() => getInitialSeedData().completions);
-  const [todos, setTodos] = useState<Todo[]>(() => getInitialSeedData().todos);
+  // Core data state initialized empty with no demo items
+  const [habits, setHabits] = useState<Habit[]>([]);
+  const [completions, setCompletions] = useState<HabitCompletion[]>([]);
+  const [todos, setTodos] = useState<Todo[]>([]);
   const [settings, setSettings] = useState<UserSettings>(INITIAL_SETTINGS);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
@@ -266,45 +308,51 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         // Save profile
         await saveUserProfile(currentUser);
 
-        // Fetch cloud data for this user to check if cloud already has saved records
-        const cloudData = await fetchAllCloudData(currentUser.uid);
+        // Fetch raw cloud data and purge legacy demo items from Firestore if present
+        const rawCloudData = await fetchAllCloudData(currentUser.uid);
+        if (rawCloudData) {
+          await purgeCloudDemoItems(currentUser.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
+        }
+
+        const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
+        const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
+        const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
+
         const currentHabits = Storage.getHabits();
         const currentCompletions = Storage.getCompletions();
         const currentTodos = Storage.getTodos();
         const currentSettings = Storage.getSettings();
 
-        const hasAnyCloudData = cloudData && (
-          cloudData.habits.length > 0 ||
-          cloudData.todos.length > 0 ||
-          cloudData.completions.length > 0
-        );
+        const hasAnyCloudData = cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0;
 
-        if (hasAnyCloudData && cloudData) {
-          // Cloud is authoritative for authenticated accounts: adopt cloud data directly
-          setHabits(cloudData.habits);
-          Storage.saveHabits(cloudData.habits);
+        if (hasAnyCloudData) {
+          // Cloud is authoritative for authenticated accounts: adopt clean cloud data directly
+          setHabits(cloudHabits);
+          Storage.saveHabits(cloudHabits);
 
-          setCompletions(cloudData.completions);
-          Storage.saveCompletions(cloudData.completions);
+          setCompletions(cloudCompletions);
+          Storage.saveCompletions(cloudCompletions);
 
-          const sortedTodos = [...cloudData.todos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          const sortedTodos = [...cloudTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
           setTodos(sortedTodos);
           Storage.saveTodos(sortedTodos);
 
-          if (cloudData.settings) {
-            setSettings(cloudData.settings);
-            Storage.saveSettings(cloudData.settings);
+          if (rawCloudData?.settings) {
+            setSettings(rawCloudData.settings);
+            Storage.saveSettings(rawCloudData.settings);
           }
           setLastSyncedAt(new Date());
         } else {
-          // Brand new cloud account: seed cloud with current local items
-          await uploadInitialDataToCloud(
-            currentUser.uid,
-            currentHabits,
-            currentCompletions,
-            currentTodos,
-            currentSettings
-          );
+          // Brand new account or empty cloud: upload clean local items if present
+          if (currentHabits.length > 0 || currentCompletions.length > 0 || currentTodos.length > 0) {
+            await uploadInitialDataToCloud(
+              currentUser.uid,
+              currentHabits,
+              currentCompletions,
+              currentTodos,
+              currentSettings
+            );
+          }
           setLastSyncedAt(new Date());
         }
 
@@ -316,19 +364,22 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         unsubscribeFirestore = subscribeToUserCloudData(currentUser.uid, {
           onHabits: (cloudHabits) => {
             if (!cloudHabits) return;
-            setHabits(cloudHabits);
-            Storage.saveHabits(cloudHabits);
+            const clean = filterCleanHabits(cloudHabits);
+            setHabits(clean);
+            Storage.saveHabits(clean);
             setLastSyncedAt(new Date());
           },
           onCompletions: (cloudCompletions) => {
             if (!cloudCompletions) return;
-            setCompletions(cloudCompletions);
-            Storage.saveCompletions(cloudCompletions);
+            const clean = filterCleanCompletions(cloudCompletions);
+            setCompletions(clean);
+            Storage.saveCompletions(clean);
             setLastSyncedAt(new Date());
           },
           onTodos: (cloudTodos) => {
             if (!cloudTodos) return;
-            const sorted = [...cloudTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+            const clean = filterCleanTodos(cloudTodos);
+            const sorted = [...clean].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
             setTodos(sorted);
             Storage.saveTodos(sorted);
             setLastSyncedAt(new Date());
@@ -363,37 +414,47 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const signedInUser = await signInWithGoogle();
       await saveUserProfile(signedInUser);
 
-      // Explicitly pull cloud data for the signed-in user and merge
-      const cloudData = await fetchAllCloudData(signedInUser.uid);
+      // Explicitly pull cloud data for the signed-in user and purge demo items
+      const rawCloudData = await fetchAllCloudData(signedInUser.uid);
+      if (rawCloudData) {
+        await purgeCloudDemoItems(signedInUser.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
+      }
+
+      const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
+      const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
+      const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
+
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
       const currentSettings = Storage.getSettings();
 
-      if (cloudData && (cloudData.habits.length > 0 || cloudData.todos.length > 0 || cloudData.completions.length > 0)) {
-        setHabits(cloudData.habits);
-        Storage.saveHabits(cloudData.habits);
+      if (cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0) {
+        setHabits(cloudHabits);
+        Storage.saveHabits(cloudHabits);
 
-        setCompletions(cloudData.completions);
-        Storage.saveCompletions(cloudData.completions);
+        setCompletions(cloudCompletions);
+        Storage.saveCompletions(cloudCompletions);
 
-        const sortedTodos = [...cloudData.todos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const sortedTodos = [...cloudTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         setTodos(sortedTodos);
         Storage.saveTodos(sortedTodos);
 
-        if (cloudData.settings) {
-          setSettings(cloudData.settings);
-          Storage.saveSettings(cloudData.settings);
+        if (rawCloudData?.settings) {
+          setSettings(rawCloudData.settings);
+          Storage.saveSettings(rawCloudData.settings);
         }
         setLastSyncedAt(new Date());
       } else {
-        await uploadInitialDataToCloud(
-          signedInUser.uid,
-          currentHabits,
-          currentCompletions,
-          currentTodos,
-          currentSettings
-        );
+        if (currentHabits.length > 0 || currentCompletions.length > 0 || currentTodos.length > 0) {
+          await uploadInitialDataToCloud(
+            signedInUser.uid,
+            currentHabits,
+            currentCompletions,
+            currentTodos,
+            currentSettings
+          );
+        }
         setLastSyncedAt(new Date());
       }
 
@@ -669,23 +730,27 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     setIsSyncing(true);
     try {
-      const cloudData = await fetchAllCloudData(userRef.current.uid);
-      if (cloudData) {
-        if (cloudData.habits && cloudData.habits.length > 0) {
-          setHabits(cloudData.habits);
-          Storage.saveHabits(cloudData.habits);
-        }
-        if (cloudData.completions) {
-          setCompletions(cloudData.completions);
-          Storage.saveCompletions(cloudData.completions);
-        }
-        if (cloudData.todos) {
-          setTodos(cloudData.todos);
-          Storage.saveTodos(cloudData.todos);
-        }
-        if (cloudData.settings) {
-          setSettings(cloudData.settings);
-          Storage.saveSettings(cloudData.settings);
+      const rawCloudData = await fetchAllCloudData(userRef.current.uid);
+      if (rawCloudData) {
+        await purgeCloudDemoItems(userRef.current.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
+
+        const cleanHabits = filterCleanHabits(rawCloudData.habits);
+        const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
+        const cleanTodos = filterCleanTodos(rawCloudData.todos);
+
+        setHabits(cleanHabits);
+        Storage.saveHabits(cleanHabits);
+
+        setCompletions(cleanCompletions);
+        Storage.saveCompletions(cleanCompletions);
+
+        const sortedTodos = [...cleanTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        setTodos(sortedTodos);
+        Storage.saveTodos(sortedTodos);
+
+        if (rawCloudData.settings) {
+          setSettings(rawCloudData.settings);
+          Storage.saveSettings(rawCloudData.settings);
         }
         showToast({
           type: 'success',

@@ -408,7 +408,7 @@ export function SettingsView({ onConfirmReset, onConfirmClear }: SettingsViewPro
               onClick={onConfirmReset}
               className="px-3.5 py-2 text-xs font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 rounded-xl transition cursor-pointer"
             >
-              Restore Sample Starter Routine
+              Reset to Clean Workspace
             </button>
           )}
           {onConfirmClear && (
