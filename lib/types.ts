@@ -77,7 +77,7 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'calendar' | 'progress' | 'settings';
 
 export interface ToastMessage {
   id: string;
@@ -228,4 +228,191 @@ export interface PersonalRecord {
   subtext: string;
   icon: string;
 }
+
+// ==========================================
+// GOALS & ROADMAP TYPES
+// ==========================================
+
+export type GoalTimeHorizon =
+  | 'today'
+  | 'this_week'
+  | 'this_month'
+  | '3_months'
+  | '6_months'
+  | 'this_year'
+  | 'long_term';
+
+export type GoalType =
+  | 'checkbox'
+  | 'number'
+  | 'counter'
+  | 'percentage'
+  | 'streak'
+  | 'milestones';
+
+export type GoalStatus =
+  | 'not_started'
+  | 'active'
+  | 'on_track'
+  | 'at_risk'
+  | 'delayed'
+  | 'completed'
+  | 'paused'
+  | 'cancelled';
+
+export type GoalPriority = 'low' | 'medium' | 'high';
+
+export interface Milestone {
+  id: string;
+  goalId?: string;
+  title: string;
+  description?: string;
+  deadline?: string; // YYYY-MM-DD
+  status: 'not_started' | 'in_progress' | 'completed';
+  progress: number; // 0 - 100
+  relatedTasks?: string[];
+  relatedTrackers?: {
+    name: string;
+    target: number;
+    current: number;
+    unit: string;
+  }[];
+}
+
+export interface GoalTracker {
+  id: string;
+  type: 'study' | 'workout' | 'savings' | 'custom';
+  name: string;
+  target: number;
+  current: number;
+  unit: string;
+}
+
+export interface AcademicMetadata {
+  isStudyGoal?: boolean;
+  subject?: string;
+  totalChapters?: number;
+  completedChapters?: number;
+  targetQuestions?: number;
+  solvedQuestions?: number;
+  revisionSessions?: number;
+  completedRevisions?: number;
+  samplePapersTarget?: number;
+  samplePapersCompleted?: number;
+  mockTestTargetScore?: number;
+  latestMockScore?: number;
+}
+
+export interface Goal {
+  id: string;
+  title: string;
+  description?: string;
+  category: string;
+  priority: GoalPriority;
+  startDate: string; // YYYY-MM-DD
+  targetDate: string; // YYYY-MM-DD
+  status: GoalStatus;
+  progress: number; // 0 - 100
+  timeHorizon: GoalTimeHorizon;
+  measurementType: GoalType;
+  targetValue: number;
+  currentValue: number;
+  unit?: string;
+  milestones: Milestone[];
+  relatedTasks: string[]; // Todo IDs or titles
+  relatedHabits: string[]; // Habit IDs
+  relatedTrackers: GoalTracker[];
+  parentGoalId?: string; // For Goal Hierarchy
+  notes?: string;
+  academicMetadata?: AcademicMetadata;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DailyGoalContribution {
+  goalId: string;
+  goalTitle: string;
+  contribution: string;
+  progressDelta: number;
+  newProgress: number;
+  category: string;
+}
+
+export interface GoalAnalyticsData {
+  totalGoals: number;
+  completedGoals: number;
+  activeGoals: number;
+  onTrackGoals: number;
+  atRiskGoals: number;
+  delayedGoals: number;
+  overallCompletionRate: number;
+  milestoneCompletionRate: number;
+  byHorizon: Record<GoalTimeHorizon, number>;
+  byCategory: Record<string, { total: number; completed: number; rate: number }>;
+  upcomingDeadlines: {
+    goalId: string;
+    goalTitle: string;
+    deadline: string;
+    daysLeft: number;
+    isOverdue: boolean;
+  }[];
+}
+
+export interface AIPlanGeneratedResult {
+  title: string;
+  description: string;
+  category: string;
+  timeHorizon: GoalTimeHorizon;
+  measurementType: GoalType;
+  targetValue: number;
+  currentValue: number;
+  unit?: string;
+  targetDate: string;
+  milestones: {
+    id: string;
+    title: string;
+    description?: string;
+    deadline: string;
+    status: 'not_started' | 'in_progress' | 'completed';
+    progress: number;
+  }[];
+  monthlyTargets: string[];
+  weeklyTargets: string[];
+  suggestedTasks: string[];
+  suggestedHabits: {
+    name: string;
+    frequency: 'daily' | 'weekdays' | 'weekly';
+    category?: string;
+    icon: string;
+    color: string;
+  }[];
+  suggestedTrackers: {
+    type: 'study' | 'workout' | 'savings' | 'custom';
+    name: string;
+    target: number;
+    current: number;
+    unit: string;
+  }[];
+  academicMetadata?: AcademicMetadata;
+  strategicAdvice: string;
+}
+
+export interface AIReplanGeneratedResult {
+  pacingSummary: string;
+  revisedStatus: GoalStatus;
+  workloadRedistribution: string;
+  adjustedMilestones: Milestone[];
+  recommendedPriorities: string[];
+  scheduleAdjustmentAdvice: string;
+}
+
+export interface AIReviewReport {
+  briefing: string;
+  onTrackGoals: string[];
+  atRiskGoals: string[];
+  upcomingDeadlines: { title: string; deadline: string; daysLeft: number }[];
+  recommendedPriorities: string[];
+  actionableTips: string[];
+}
+
 

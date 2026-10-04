@@ -24,6 +24,7 @@ import {
   HelpCircle,
   Check,
   ListPlus,
+  Target,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -45,6 +46,8 @@ export function DashboardView({
     habits,
     completions,
     todos,
+    goals,
+    dailyContributions,
     settings,
     todayProgress,
     overallStreaks,
@@ -52,6 +55,7 @@ export function DashboardView({
     toggleTodoCompletion,
     convertHabitToTodo,
     getHabitStreakInfo,
+    setActiveTab,
   } = useLifeOS();
 
   const todayKey = getTodayKey();
@@ -99,7 +103,14 @@ export function DashboardView({
         </div>
 
         {/* Action button cluster - responsive grid on small mobile, flex row on tablet/desktop */}
-        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
+        <div className="grid grid-cols-3 sm:flex sm:items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={() => setActiveTab('goals')}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 min-h-[42px] sm:min-h-[36px] text-xs font-semibold text-sky-700 dark:text-sky-300 hover:text-sky-800 bg-sky-50 dark:bg-sky-950/60 hover:bg-sky-100 rounded-xl transition cursor-pointer touch-manipulation active:scale-[0.98]"
+          >
+            <Target className="w-3.5 h-3.5 text-sky-600" />
+            <span>Goals</span>
+          </button>
           <button
             onClick={onOpenNewHabit}
             className="flex items-center justify-center gap-1.5 px-3 py-2 min-h-[42px] sm:min-h-[36px] text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/80 rounded-xl transition cursor-pointer touch-manipulation active:scale-[0.98]"
@@ -205,6 +216,79 @@ export function DashboardView({
           </div>
         </div>
       </div>
+
+      {/* Daily Goal Contribution Section */}
+      {dailyContributions.length > 0 ? (
+        <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-500/10 via-sky-500/10 to-transparent border border-emerald-500/20 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Flame className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">
+                Daily Goal Contribution
+              </h3>
+            </div>
+            <button
+              onClick={() => setActiveTab('goals')}
+              className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-700 flex items-center gap-1"
+            >
+              <span>View Roadmap</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            Today&apos;s completed habits and tasks are actively advancing your long-term roadmap:
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
+            {dailyContributions.map((dc) => (
+              <div
+                key={dc.goalId}
+                onClick={() => setActiveTab('goals')}
+                className="p-2.5 rounded-lg bg-white/90 dark:bg-zinc-900/90 border border-emerald-500/20 text-xs flex items-center justify-between cursor-pointer hover:border-emerald-500/40 transition"
+              >
+                <div className="truncate mr-2">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 truncate block">
+                    {dc.goalTitle}
+                  </span>
+                  <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    {dc.contribution}
+                  </span>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 block">
+                    +{dc.progressDelta}%
+                  </span>
+                  <span className="text-[10px] text-zinc-400 font-mono">
+                    {dc.newProgress}% total
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : goals.length > 0 ? (
+        <div className="p-3 sm:p-3.5 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400">
+              <Target className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="font-bold text-zinc-900 dark:text-zinc-100">
+                {goals.length} Active Roadmap Objective{goals.length > 1 ? 's' : ''}
+              </span>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                Complete scheduled habits and to-dos today to log automatic progress.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActiveTab('goals')}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 hover:bg-sky-100 transition shrink-0"
+          >
+            <span>Roadmap</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ) : null}
 
       {/* 3. Main Split Section: Today's Habits & Today's To-Dos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">

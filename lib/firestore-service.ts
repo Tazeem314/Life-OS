@@ -13,7 +13,7 @@ import {
   where,
   User,
 } from './firebase';
-import { Habit, HabitCompletion, Todo, UserSettings } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal } from './types';
 
 export enum OperationType {
   CREATE = 'create',
@@ -162,6 +162,24 @@ export async function deleteTodoFromCloud(userId: string, todoId: string): Promi
   }
 }
 
+export async function syncGoalToCloud(userId: string, goal: Goal): Promise<void> {
+  try {
+    const goalRef = doc(db, 'users', userId, 'goals', goal.id);
+    await setDoc(goalRef, cleanForFirestore(goal), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/goals/${goal.id}`);
+  }
+}
+
+export async function deleteGoalFromCloud(userId: string, goalId: string): Promise<void> {
+  try {
+    const goalRef = doc(db, 'users', userId, 'goals', goalId);
+    await deleteDoc(goalRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/goals/${goalId}`);
+  }
+}
+
 export async function syncSettingsToCloud(userId: string, settings: UserSettings): Promise<void> {
   try {
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
@@ -176,7 +194,8 @@ export async function uploadInitialDataToCloud(
   habits: Habit[],
   completions: HabitCompletion[],
   todos: Todo[],
-  settings: UserSettings
+  settings: UserSettings,
+  goals: Goal[] = []
 ): Promise<boolean> {
   try {
     const batch = writeBatch(db);
@@ -194,6 +213,11 @@ export async function uploadInitialDataToCloud(
     todos.forEach((t) => {
       const ref = doc(db, 'users', userId, 'todos', t.id);
       batch.set(ref, cleanForFirestore(t), { merge: true });
+    });
+
+    goals.forEach((g) => {
+      const ref = doc(db, 'users', userId, 'goals', g.id);
+      batch.set(ref, cleanForFirestore(g), { merge: true });
     });
 
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
@@ -208,7 +232,7 @@ export async function uploadInitialDataToCloud(
 }
 
 /**
- * Synchronize all local habits, completions, todos, and settings to the cloud in batch.
+ * Synchronize all local habits, completions, todos, goals, and settings to the cloud in batch.
  * Used for automatic offline re-sync and manual cloud backup.
  */
 export async function syncAllLocalDataToCloud(
@@ -216,7 +240,8 @@ export async function syncAllLocalDataToCloud(
   habits: Habit[],
   completions: HabitCompletion[],
   todos: Todo[],
-  settings: UserSettings
+  settings: UserSettings,
+  goals: Goal[] = []
 ): Promise<boolean> {
   try {
     const batch = writeBatch(db);
@@ -234,6 +259,11 @@ export async function syncAllLocalDataToCloud(
     todos.forEach((t) => {
       const ref = doc(db, 'users', userId, 'todos', t.id);
       batch.set(ref, cleanForFirestore(t), { merge: true });
+    });
+
+    goals.forEach((g) => {
+      const ref = doc(db, 'users', userId, 'goals', g.id);
+      batch.set(ref, cleanForFirestore(g), { merge: true });
     });
 
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
@@ -254,6 +284,7 @@ export async function fetchAllCloudData(userId: string): Promise<{
   habits: Habit[];
   completions: HabitCompletion[];
   todos: Todo[];
+  goals: Goal[];
   settings: UserSettings | null;
 } | null> {
   try {
@@ -270,10 +301,14 @@ export async function fetchAllCloudData(userId: string): Promise<{
     todosSnap.forEach((d) => todos.push(d.data() as Todo));
     todos.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
+    const goalsSnap = await getDocs(collection(db, 'users', userId, 'goals'));
+    const goals: Goal[] = [];
+    goalsSnap.forEach((d) => goals.push(d.data() as Goal));
+
     const settingsSnap = await getDoc(doc(db, 'users', userId, 'settings', 'user_settings'));
     const settings = settingsSnap.exists() ? (settingsSnap.data() as UserSettings) : null;
 
-    return { habits, completions, todos, settings };
+    return { habits, completions, todos, goals, settings };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
     return null;
@@ -293,6 +328,10 @@ export async function checkHasCloudData(userId: string): Promise<boolean> {
     const todosSnap = await getDocs(todosCol);
     if (!todosSnap.empty) return true;
 
+    const goalsCol = collection(db, 'users', userId, 'goals');
+    const goalsSnap = await getDocs(goalsCol);
+    if (!goalsSnap.empty) return true;
+
     const compCol = collection(db, 'users', userId, 'habitCompletions');
     const compSnap = await getDocs(compCol);
     if (!compSnap.empty) return true;
@@ -310,6 +349,7 @@ export function subscribeToUserCloudData(
     onHabits: (habits: Habit[]) => void;
     onCompletions: (completions: HabitCompletion[]) => void;
     onTodos: (todos: Todo[]) => void;
+    onGoals?: (goals: Goal[]) => void;
     onSettings: (settings: UserSettings) => void;
   }
 ): () => void {
@@ -344,6 +384,18 @@ export function subscribeToUserCloudData(
     (err) => handleFirestoreError(err, OperationType.LIST, `users/${userId}/todos`)
   );
 
+  const unsubGoals = onSnapshot(
+    collection(db, 'users', userId, 'goals'),
+    (snap) => {
+      const list: Goal[] = [];
+      snap.forEach((d) => list.push(d.data() as Goal));
+      if (handlers.onGoals) {
+        handlers.onGoals(list);
+      }
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, `users/${userId}/goals`)
+  );
+
   const unsubSettings = onSnapshot(
     doc(db, 'users', userId, 'settings', 'user_settings'),
     (snap) => {
@@ -358,6 +410,7 @@ export function subscribeToUserCloudData(
     unsubHabits();
     unsubCompletions();
     unsubTodos();
+    unsubGoals();
     unsubSettings();
   };
 }

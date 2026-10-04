@@ -24,6 +24,10 @@ service cloud.firestore {
         allow read, write: if isOwner(userId);
       }
 
+      match /goals/{goalId} {
+        allow read, write: if isOwner(userId);
+      }
+
       match /settings/{settingsId} {
         allow read, write: if isOwner(userId);
       }

@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Sparkles,
   CheckSquare,
+  Target,
   Calendar,
   TrendingUp,
   Settings,
@@ -22,7 +23,9 @@ interface NavItem {
 }
 
 export function Sidebar() {
-  const { activeTab, setActiveTab, todayProgress, habits, user, loginWithGoogle, isOnline } = useLifeOS();
+  const { activeTab, setActiveTab, todayProgress, habits, goals, user, loginWithGoogle, isOnline } = useLifeOS();
+
+  const activeGoalsCount = (goals || []).filter((g) => g.status === 'active' || g.status === 'on_track' || g.status === 'at_risk').length;
 
   const navItems: NavItem[] = [
     {
@@ -44,6 +47,12 @@ export function Sidebar() {
         todayProgress.totalTodos > 0
           ? `${todayProgress.completedTodos}/${todayProgress.totalTodos}`
           : undefined,
+    },
+    {
+      id: 'goals',
+      label: 'Goals & Roadmap',
+      icon: Target,
+      badge: activeGoalsCount > 0 ? activeGoalsCount : undefined,
     },
     {
       id: 'calendar',

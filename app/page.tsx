@@ -12,23 +12,35 @@ import { TodoView } from '@/components/TodoView';
 import { CalendarView } from '@/components/CalendarView';
 import { ProgressView } from '@/components/ProgressView';
 import { SettingsView } from '@/components/SettingsView';
+import { GoalsView } from '@/components/GoalsView';
 import { HabitModal } from '@/components/modals/HabitModal';
 import { TodoModal } from '@/components/modals/TodoModal';
+import { GoalModal } from '@/components/modals/GoalModal';
+import { AIGoalCopilotModal } from '@/components/modals/AIGoalCopilotModal';
+import { AIReplanModal } from '@/components/modals/AIReplanModal';
+import { AIReviewModal } from '@/components/modals/AIReviewModal';
+import { GoalDetailModal } from '@/components/modals/GoalDetailModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
 import { HabitDetailAnalyticsModal } from '@/components/modals/HabitDetailAnalyticsModal';
 import { ConfirmDialog } from '@/components/modals/ConfirmDialog';
-import { Habit, Todo } from '@/lib/types';
+import { Habit, Todo, Goal } from '@/lib/types';
 import { motion, AnimatePresence } from 'motion/react';
 
 function LifeOSAppContent() {
   const {
     activeTab,
+    goals,
     createHabit,
     updateHabit,
     deleteHabit,
     createTodo,
     updateTodo,
     deleteTodo,
+    createGoal,
+    updateGoal,
+    deleteGoal,
+    applyAIPlan,
+    applyAIReplan,
     resetDataToDefaults,
     clearData,
   } = useLifeOS();
@@ -41,6 +53,14 @@ function LifeOSAppContent() {
   const [isTodoModalOpen, setIsTodoModalOpen] = useState(false);
   const [todoToEdit, setTodoToEdit] = useState<Todo | null>(null);
   const [defaultTodoDate, setDefaultTodoDate] = useState<string | undefined>(undefined);
+
+  // Goal Modals State
+  const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [goalToEdit, setGoalToEdit] = useState<Goal | null>(null);
+  const [isAIGoalCopilotOpen, setIsAIGoalCopilotOpen] = useState(false);
+  const [isAIReviewOpen, setIsAIReviewOpen] = useState(false);
+  const [selectedDetailGoal, setSelectedDetailGoal] = useState<Goal | null>(null);
+  const [goalToReplan, setGoalToReplan] = useState<Goal | null>(null);
 
   // Habit History & Analytics Modal State
   const [selectedHistoryHabit, setSelectedHistoryHabit] = useState<Habit | null>(null);
@@ -109,6 +129,21 @@ function LifeOSAppContent() {
       isDestructive: true,
       onConfirm: () => {
         deleteTodo(todo.id);
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  };
+
+  const handleDeleteGoalPrompt = (goal: Goal) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Goal & Roadmap?',
+      message: `Are you sure you want to remove "${goal.title}"? Associated milestones will also be cleared.`,
+      confirmText: 'Delete Goal',
+      isDestructive: true,
+      onConfirm: () => {
+        deleteGoal(goal.id);
+        if (selectedDetailGoal?.id === goal.id) setSelectedDetailGoal(null);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
       },
     });
@@ -203,6 +238,26 @@ function LifeOSAppContent() {
                   onOpenNewTodo={(date) => handleOpenNewTodo(date)}
                   onEditTodo={handleEditTodo}
                   onDeleteTodo={handleDeleteTodoPrompt}
+                />
+              </motion.div>
+            )}
+
+            {activeTab === 'goals' && (
+              <motion.div
+                key="goals"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <GoalsView
+                  onOpenNewGoal={() => {
+                    setGoalToEdit(null);
+                    setIsGoalModalOpen(true);
+                  }}
+                  onOpenAICopilot={() => setIsAIGoalCopilotOpen(true)}
+                  onOpenAIReview={() => setIsAIReviewOpen(true)}
+                  onSelectGoal={(g) => setSelectedDetailGoal(g)}
                 />
               </motion.div>
             )}
@@ -302,6 +357,66 @@ function LifeOSAppContent() {
         isOpen={!!selectedAnalyticsHabit}
         habit={selectedAnalyticsHabit}
         onClose={() => setSelectedAnalyticsHabit(null)}
+      />
+
+      {/* Goal & Roadmap Modals */}
+      <GoalModal
+        isOpen={isGoalModalOpen}
+        goalToEdit={goalToEdit}
+        onClose={() => {
+          setIsGoalModalOpen(false);
+          setGoalToEdit(null);
+        }}
+        onSave={(data) => {
+          if (goalToEdit) {
+            return updateGoal(goalToEdit.id, data);
+          } else {
+            return createGoal(data);
+          }
+        }}
+        onDelete={handleDeleteGoalPrompt}
+      />
+
+      <GoalDetailModal
+        isOpen={!!selectedDetailGoal}
+        goal={goals.find((g) => g.id === selectedDetailGoal?.id) || selectedDetailGoal}
+        onClose={() => setSelectedDetailGoal(null)}
+        onEdit={(goal) => {
+          setSelectedDetailGoal(null);
+          setGoalToEdit(goal);
+          setIsGoalModalOpen(true);
+        }}
+        onDelete={(goal) => {
+          handleDeleteGoalPrompt(goal);
+        }}
+        onOpenReplan={(goal) => {
+          setSelectedDetailGoal(null);
+          setGoalToReplan(goal);
+        }}
+      />
+
+      <AIGoalCopilotModal
+        isOpen={isAIGoalCopilotOpen}
+        onClose={() => setIsAIGoalCopilotOpen(false)}
+        onAdoptPlan={(plan, createTasks, createHabits) => {
+          applyAIPlan(plan, createTasks, createHabits);
+          setIsAIGoalCopilotOpen(false);
+        }}
+      />
+
+      <AIReplanModal
+        isOpen={!!goalToReplan}
+        goal={goalToReplan}
+        onClose={() => setGoalToReplan(null)}
+        onApplyReplan={(goalId, replanResult) => {
+          applyAIReplan(goalId, replanResult);
+          setGoalToReplan(null);
+        }}
+      />
+
+      <AIReviewModal
+        isOpen={isAIReviewOpen}
+        onClose={() => setIsAIReviewOpen(false)}
       />
 
       <ConfirmDialog

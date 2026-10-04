@@ -19,7 +19,18 @@ import {
   DayProgress,
   HabitStreakInfo,
   OverallStreakInfo,
+  Goal,
+  Milestone,
+  GoalTracker,
+  DailyGoalContribution,
+  GoalAnalyticsData,
 } from '@/lib/types';
+import {
+  calculateGoalProgress,
+  determineGoalStatus,
+  computeDailyGoalContributions,
+  calculateGoalAnalytics,
+} from '@/lib/goal-service';
 import {
   Storage,
   INITIAL_SETTINGS,
@@ -85,6 +96,8 @@ import {
   deleteCompletionFromCloud,
   syncTodoToCloud,
   deleteTodoFromCloud,
+  syncGoalToCloud,
+  deleteGoalFromCloud,
   syncSettingsToCloud,
   uploadInitialDataToCloud,
   checkHasCloudData,
@@ -112,11 +125,14 @@ interface LifeOSContextType {
   habits: Habit[];
   completions: HabitCompletion[];
   todos: Todo[];
+  goals: Goal[];
   settings: UserSettings;
   activeTab: ActiveTab;
   selectedDate: string;
   toasts: ToastMessage[];
   isLoaded: boolean;
+  dailyContributions: DailyGoalContribution[];
+  goalAnalytics: GoalAnalyticsData;
 
   // Navigation
   setActiveTab: (tab: ActiveTab) => void;
@@ -141,6 +157,19 @@ interface LifeOSContextType {
   toggleTodoCompletion: (id: string) => void;
   reorderTodos: (dateKey: string, sourceIndex: number, destIndex: number) => void;
   getTodosForDate: (dateKey: string) => Todo[];
+
+  // Goals & Roadmap Operations
+  createGoal: (goal: Omit<Goal, 'id' | 'createdAt' | 'updatedAt' | 'progress'>) => { success: boolean; error?: string; goal?: Goal };
+  updateGoal: (id: string, updates: Partial<Goal>) => { success: boolean; error?: string };
+  deleteGoal: (id: string) => void;
+  toggleGoalStatus: (id: string) => void;
+  updateMilestone: (goalId: string, milestoneId: string, updates: Partial<Milestone>) => void;
+  addMilestone: (goalId: string, milestone: Omit<Milestone, 'id'>) => void;
+  deleteMilestone: (goalId: string, milestoneId: string) => void;
+  adjustGoalTracker: (goalId: string, trackerId: string, delta: number) => void;
+  logGoalProgressIncrement: (goalId: string, delta: number, note?: string) => void;
+  applyAIPlan: (plan: any, addTasks?: boolean, addHabits?: boolean) => { success: boolean; goalId?: string };
+  applyAIReplan: (goalId: string, replanResult: any) => { success: boolean };
 
   // Stats & Progress
   todayProgress: DayProgress;
@@ -178,6 +207,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [completions, setCompletions] = useState<HabitCompletion[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [settings, setSettings] = useState<UserSettings>(INITIAL_SETTINGS);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
@@ -191,11 +221,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const savedHabits = Storage.getHabits();
         const savedCompletions = Storage.getCompletions();
         const savedTodos = Storage.getTodos();
+        const savedGoals = Storage.getGoals();
         const savedSettings = Storage.getSettings();
 
         setHabits(savedHabits);
         setCompletions(savedCompletions);
         setTodos(savedTodos);
+        setGoals(savedGoals);
         setSettings(savedSettings);
       } catch (err) {
         console.warn('Failed to load local storage state:', err);
@@ -317,13 +349,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
         const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
         const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
+        const cloudGoals = rawCloudData ? rawCloudData.goals || [] : [];
 
         const currentHabits = Storage.getHabits();
         const currentCompletions = Storage.getCompletions();
         const currentTodos = Storage.getTodos();
+        const currentGoals = Storage.getGoals();
         const currentSettings = Storage.getSettings();
 
-        const hasAnyCloudData = cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0;
+        const hasAnyCloudData =
+          cloudHabits.length > 0 ||
+          cloudTodos.length > 0 ||
+          cloudCompletions.length > 0 ||
+          cloudGoals.length > 0;
 
         if (hasAnyCloudData) {
           // Cloud is authoritative for authenticated accounts: adopt clean cloud data directly
@@ -337,6 +375,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           setTodos(sortedTodos);
           Storage.saveTodos(sortedTodos);
 
+          setGoals(cloudGoals);
+          Storage.saveGoals(cloudGoals);
+
           if (rawCloudData?.settings) {
             setSettings(rawCloudData.settings);
             Storage.saveSettings(rawCloudData.settings);
@@ -344,13 +385,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           setLastSyncedAt(new Date());
         } else {
           // Brand new account or empty cloud: upload clean local items if present
-          if (currentHabits.length > 0 || currentCompletions.length > 0 || currentTodos.length > 0) {
+          if (
+            currentHabits.length > 0 ||
+            currentCompletions.length > 0 ||
+            currentTodos.length > 0 ||
+            currentGoals.length > 0
+          ) {
             await uploadInitialDataToCloud(
               currentUser.uid,
               currentHabits,
               currentCompletions,
               currentTodos,
-              currentSettings
+              currentSettings,
+              currentGoals
             );
           }
           setLastSyncedAt(new Date());
@@ -382,6 +429,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const sorted = [...clean].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
             setTodos(sorted);
             Storage.saveTodos(sorted);
+            setLastSyncedAt(new Date());
+          },
+          onGoals: (cloudGoals) => {
+            if (!cloudGoals) return;
+            setGoals(cloudGoals);
+            Storage.saveGoals(cloudGoals);
             setLastSyncedAt(new Date());
           },
           onSettings: (cloudSettings) => {
@@ -423,13 +476,20 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
       const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
       const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
+      const cloudGoals = rawCloudData ? rawCloudData.goals || [] : [];
 
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
+      const currentGoals = Storage.getGoals();
       const currentSettings = Storage.getSettings();
 
-      if (cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0) {
+      if (
+        cloudHabits.length > 0 ||
+        cloudTodos.length > 0 ||
+        cloudCompletions.length > 0 ||
+        cloudGoals.length > 0
+      ) {
         setHabits(cloudHabits);
         Storage.saveHabits(cloudHabits);
 
@@ -440,19 +500,28 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         setTodos(sortedTodos);
         Storage.saveTodos(sortedTodos);
 
+        setGoals(cloudGoals);
+        Storage.saveGoals(cloudGoals);
+
         if (rawCloudData?.settings) {
           setSettings(rawCloudData.settings);
           Storage.saveSettings(rawCloudData.settings);
         }
         setLastSyncedAt(new Date());
       } else {
-        if (currentHabits.length > 0 || currentCompletions.length > 0 || currentTodos.length > 0) {
+        if (
+          currentHabits.length > 0 ||
+          currentCompletions.length > 0 ||
+          currentTodos.length > 0 ||
+          currentGoals.length > 0
+        ) {
           await uploadInitialDataToCloud(
             signedInUser.uid,
             currentHabits,
             currentCompletions,
             currentTodos,
-            currentSettings
+            currentSettings,
+            currentGoals
           );
         }
         setLastSyncedAt(new Date());
@@ -525,6 +594,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
+      const currentGoals = Storage.getGoals();
       const currentSettings = Storage.getSettings();
 
       const success = await syncAllLocalDataToCloud(
@@ -532,7 +602,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         currentHabits,
         currentCompletions,
         currentTodos,
-        currentSettings
+        currentSettings,
+        currentGoals
       );
 
       if (success) {
@@ -674,6 +745,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
+      const currentGoals = Storage.getGoals();
       const currentSettings = Storage.getSettings();
 
       const success = await syncAllLocalDataToCloud(
@@ -681,14 +753,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         currentHabits,
         currentCompletions,
         currentTodos,
-        currentSettings
+        currentSettings,
+        currentGoals
       );
 
       if (success) {
         showToast({
           type: 'success',
           title: 'Cloud Sync Complete',
-          message: 'All your habits, to-dos, and streaks are up to date in the cloud.',
+          message: 'All your habits, to-dos, goals, and streaks are up to date in the cloud.',
         });
       } else {
         showToast({
@@ -737,6 +810,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const cleanHabits = filterCleanHabits(rawCloudData.habits);
         const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
         const cleanTodos = filterCleanTodos(rawCloudData.todos);
+        const cleanGoals = rawCloudData.goals || [];
 
         setHabits(cleanHabits);
         Storage.saveHabits(cleanHabits);
@@ -748,6 +822,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         setTodos(sortedTodos);
         Storage.saveTodos(sortedTodos);
 
+        setGoals(cleanGoals);
+        Storage.saveGoals(cleanGoals);
+
         if (rawCloudData.settings) {
           setSettings(rawCloudData.settings);
           Storage.saveSettings(rawCloudData.settings);
@@ -755,7 +832,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         showToast({
           type: 'success',
           title: 'Cloud Data Restored',
-          message: 'Successfully pulled and restored your latest habits and tasks from your Gmail account!',
+          message: 'Successfully pulled and restored your habits, tasks, and goals from your Gmail account!',
         });
       } else {
         showToast({
@@ -843,6 +920,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const persistTodos = useCallback((newTodos: Todo[]) => {
     setTodos(newTodos);
     Storage.saveTodos(newTodos);
+    triggerDebouncedAutoSync();
+    requestServiceWorkerBackgroundSync();
+  }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
+
+  const persistGoals = useCallback((newGoals: Goal[]) => {
+    setGoals(newGoals);
+    Storage.saveGoals(newGoals);
     triggerDebouncedAutoSync();
     requestServiceWorkerBackgroundSync();
   }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
@@ -1230,6 +1314,450 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     [todos]
   );
 
+  // GOALS & ROADMAP OPERATIONS
+  const createGoal = useCallback(
+    (goalData: Omit<Goal, 'id' | 'createdAt' | 'updatedAt' | 'progress'>) => {
+      if (!goalData.title.trim()) {
+        return { success: false, error: 'Goal title cannot be empty.' };
+      }
+      const initialProgress = calculateGoalProgress({
+        ...goalData,
+        currentValue: goalData.currentValue ?? 0,
+        targetValue: goalData.targetValue ?? 1,
+      });
+
+      const newGoal: Goal = {
+        ...goalData,
+        title: goalData.title.trim(),
+        id: `goal_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        currentValue: Number(goalData.currentValue) || 0,
+        targetValue: Number(goalData.targetValue) || 1,
+        progress: initialProgress,
+        status: goalData.status || (initialProgress >= 100 ? 'completed' : 'active'),
+        milestones: goalData.milestones || [],
+        relatedTasks: goalData.relatedTasks || [],
+        relatedHabits: goalData.relatedHabits || [],
+        relatedTrackers: goalData.relatedTrackers || [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updated = [newGoal, ...goals];
+      persistGoals(updated);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, newGoal);
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Goal Established',
+        message: `"${newGoal.title}" roadmap is active!`,
+      });
+      return { success: true, goal: newGoal };
+    },
+    [goals, persistGoals, showToast]
+  );
+
+  const updateGoal = useCallback(
+    (id: string, updates: Partial<Goal>) => {
+      let modifiedGoal: Goal | null = null;
+      const updated = goals.map((g) => {
+        if (g.id === id) {
+          const merged = { ...g, ...updates, updatedAt: new Date().toISOString() };
+          merged.progress = calculateGoalProgress(merged);
+          merged.status = determineGoalStatus(merged, getTodayKey());
+          modifiedGoal = merged;
+          return merged;
+        }
+        return g;
+      });
+
+      persistGoals(updated);
+
+      if (userRef.current && modifiedGoal) {
+        syncGoalToCloud(userRef.current.uid, modifiedGoal);
+      }
+
+      showToast({
+        type: 'info',
+        title: 'Goal Updated',
+        message: 'Your roadmap adjustments have been saved.',
+      });
+      return { success: true };
+    },
+    [goals, persistGoals, showToast]
+  );
+
+  const deleteGoal = useCallback(
+    (id: string) => {
+      const target = goals.find((g) => g.id === id);
+      const updated = goals.filter((g) => g.id !== id);
+      persistGoals(updated);
+
+      if (userRef.current) {
+        deleteGoalFromCloud(userRef.current.uid, id);
+      }
+
+      showToast({
+        type: 'info',
+        title: 'Goal Removed',
+        message: target ? `"${target.title}" was removed.` : 'Goal removed.',
+      });
+    },
+    [goals, persistGoals, showToast]
+  );
+
+  const toggleGoalStatus = useCallback(
+    (id: string) => {
+      const target = goals.find((g) => g.id === id);
+      if (!target) return;
+      const nextStatus = target.status === 'completed' ? 'active' : 'completed';
+      const nextProgress = nextStatus === 'completed' ? 100 : calculateGoalProgress(target);
+      updateGoal(id, { status: nextStatus, progress: nextProgress });
+    },
+    [goals, updateGoal]
+  );
+
+  const updateMilestone = useCallback(
+    (goalId: string, milestoneId: string, updates: Partial<Milestone>) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return;
+
+      const updatedMilestones = targetGoal.milestones.map((m) => {
+        if (m.id === milestoneId) {
+          const updatedM = { ...m, ...updates };
+          if (updates.status === 'completed') {
+            updatedM.progress = 100;
+          } else if (updates.status === 'not_started') {
+            updatedM.progress = 0;
+          }
+          return updatedM;
+        }
+        return m;
+      });
+
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        milestones: updatedMilestones,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+      updatedGoal.status = determineGoalStatus(updatedGoal, getTodayKey());
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+
+      if (updatedGoal.progress >= 100) {
+        triggerCelebration();
+        showToast({
+          type: 'success',
+          title: 'Goal Completed! 🏆',
+          message: `Congratulations! You accomplished all milestones for "${targetGoal.title}"!`,
+        });
+      }
+    },
+    [goals, persistGoals, triggerCelebration, showToast]
+  );
+
+  const addMilestone = useCallback(
+    (goalId: string, milestoneData: Omit<Milestone, 'id'>) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return;
+
+      const newMilestone: Milestone = {
+        ...milestoneData,
+        id: `ms_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        status: milestoneData.status || 'not_started',
+        progress: milestoneData.progress || 0,
+      };
+
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        milestones: [...(targetGoal.milestones || []), newMilestone],
+        updatedAt: new Date().toISOString(),
+      };
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+      updatedGoal.status = determineGoalStatus(updatedGoal, getTodayKey());
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+    },
+    [goals, persistGoals]
+  );
+
+  const deleteMilestone = useCallback(
+    (goalId: string, milestoneId: string) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return;
+
+      const updatedMilestones = (targetGoal.milestones || []).filter((m) => m.id !== milestoneId);
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        milestones: updatedMilestones,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+      updatedGoal.status = determineGoalStatus(updatedGoal, getTodayKey());
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+    },
+    [goals, persistGoals]
+  );
+
+  const adjustGoalTracker = useCallback(
+    (goalId: string, trackerId: string, delta: number) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return;
+
+      let trackerName = 'Tracker';
+      let newCurrentVal = targetGoal.currentValue;
+
+      const updatedTrackers = (targetGoal.relatedTrackers || []).map((tr) => {
+        if (tr.id === trackerId) {
+          trackerName = tr.name;
+          const nextVal = Math.max(0, tr.current + delta);
+          return { ...tr, current: nextVal };
+        }
+        return tr;
+      });
+
+      let updatedAcademic = targetGoal.academicMetadata ? { ...targetGoal.academicMetadata } : undefined;
+      if (updatedAcademic) {
+        const lowerName = trackerName.toLowerCase();
+        if (lowerName.includes('chapter')) {
+          updatedAcademic.completedChapters = Math.max(0, (updatedAcademic.completedChapters || 0) + delta);
+        } else if (lowerName.includes('question')) {
+          updatedAcademic.solvedQuestions = Math.max(0, (updatedAcademic.solvedQuestions || 0) + delta);
+        } else if (lowerName.includes('paper')) {
+          updatedAcademic.samplePapersCompleted = Math.max(0, (updatedAcademic.samplePapersCompleted || 0) + delta);
+        } else if (lowerName.includes('revision')) {
+          updatedAcademic.completedRevisions = Math.max(0, (updatedAcademic.completedRevisions || 0) + delta);
+        }
+      }
+
+      if (targetGoal.measurementType === 'counter' || targetGoal.measurementType === 'number') {
+        newCurrentVal = Math.max(0, targetGoal.currentValue + delta);
+      }
+
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        currentValue: newCurrentVal,
+        relatedTrackers: updatedTrackers,
+        academicMetadata: updatedAcademic,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+      updatedGoal.status = determineGoalStatus(updatedGoal, getTodayKey());
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+
+      showToast({
+        type: 'success',
+        title: `${delta > 0 ? '+' : ''}${delta} ${trackerName}`,
+        message: `Updated progress toward "${targetGoal.title}" (${updatedGoal.progress}%)`,
+      });
+    },
+    [goals, persistGoals, showToast]
+  );
+
+  const logGoalProgressIncrement = useCallback(
+    (goalId: string, delta: number, note?: string) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return;
+
+      const nextVal = Math.max(0, targetGoal.currentValue + delta);
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        currentValue: nextVal,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+      updatedGoal.status = determineGoalStatus(updatedGoal, getTodayKey());
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+
+      showToast({
+        type: 'info',
+        title: `Progress Recorded: +${delta} ${targetGoal.unit || 'units'}`,
+        message: note || `Now at ${updatedGoal.progress}% completion`,
+      });
+    },
+    [goals, persistGoals, showToast]
+  );
+
+  const applyAIPlan = useCallback(
+    (plan: any, addTasks: boolean = true, addHabits: boolean = true) => {
+      const goalId = `goal_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const linkedHabitIds: string[] = [];
+      const linkedTaskIds: string[] = [];
+
+      // 1. Optionally create habits
+      if (addHabits && Array.isArray(plan.suggestedHabits)) {
+        plan.suggestedHabits.forEach((sh: any) => {
+          const habitId = `habit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          linkedHabitIds.push(habitId);
+          createHabit({
+            name: sh.name,
+            icon: sh.icon || 'Sparkles',
+            color: sh.color || '#0284c7',
+            frequency: sh.frequency || 'daily',
+            daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+            startDate: getTodayKey(),
+            status: 'active',
+            category: plan.category || 'Goals',
+          });
+        });
+      }
+
+      // 2. Optionally create tasks
+      if (addTasks && Array.isArray(plan.suggestedTasks)) {
+        plan.suggestedTasks.forEach((st: string) => {
+          const todoId = `todo_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          linkedTaskIds.push(todoId);
+          createTodo({
+            title: st,
+            date: getTodayKey(),
+            priority: 'high',
+            completed: false,
+            notes: `Milestone action for: ${plan.title}`,
+          });
+        });
+      }
+
+      // 3. Format milestones
+      const milestones: Milestone[] = (plan.milestones || []).map((m: any, idx: number) => ({
+        id: `ms_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+        goalId,
+        title: m.title,
+        description: m.description,
+        deadline: m.deadline,
+        status: m.status || 'not_started',
+        progress: m.progress || 0,
+      }));
+
+      // 4. Format trackers
+      const trackers: GoalTracker[] = (plan.suggestedTrackers || []).map((tr: any, idx: number) => ({
+        id: `tr_${Date.now()}_${idx}`,
+        type: tr.type || 'study',
+        name: tr.name,
+        target: Number(tr.target) || 1,
+        current: Number(tr.current) || 0,
+        unit: tr.unit || '',
+      }));
+
+      const newGoal: Goal = {
+        id: goalId,
+        title: plan.title,
+        description: plan.description,
+        category: plan.category || 'General',
+        priority: 'high',
+        startDate: getTodayKey(),
+        targetDate: plan.targetDate || addDays(getTodayKey(), 90),
+        status: 'active',
+        progress: 0,
+        timeHorizon: plan.timeHorizon || '3_months',
+        measurementType: plan.measurementType || 'milestones',
+        targetValue: Number(plan.targetValue) || 100,
+        currentValue: 0,
+        unit: plan.unit,
+        milestones,
+        relatedTasks: linkedTaskIds,
+        relatedHabits: linkedHabitIds,
+        relatedTrackers: trackers,
+        notes: plan.strategicAdvice ? `Strategy: ${plan.strategicAdvice}` : undefined,
+        academicMetadata: plan.academicMetadata,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updated = [newGoal, ...goals];
+      persistGoals(updated);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, newGoal);
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Roadmap Generated & Saved! 🚀',
+        message: `Goal "${newGoal.title}" has been added with all milestones and linked actions.`,
+      });
+      return { success: true, goalId };
+    },
+    [goals, persistGoals, createHabit, createTodo, showToast]
+  );
+
+  const applyAIReplan = useCallback(
+    (goalId: string, replanResult: any) => {
+      const targetGoal = goals.find((g) => g.id === goalId);
+      if (!targetGoal) return { success: false };
+
+      const updatedMilestones: Milestone[] = (replanResult.adjustedMilestones || []).map((am: any, idx: number) => {
+        const existing = targetGoal.milestones?.find((m) => m.title.toLowerCase() === am.title.toLowerCase());
+        return {
+          id: existing ? existing.id : `ms_${Date.now()}_${idx}`,
+          goalId,
+          title: am.title,
+          description: am.description || existing?.description,
+          deadline: am.deadline,
+          status: am.status || existing?.status || 'not_started',
+          progress: am.progress ?? existing?.progress ?? 0,
+        };
+      });
+
+      const updatedGoal: Goal = {
+        ...targetGoal,
+        status: replanResult.revisedStatus || 'on_track',
+        milestones: updatedMilestones,
+        notes: replanResult.pacingSummary
+          ? `${targetGoal.notes ? targetGoal.notes + '\n\n' : ''}AI Replan: ${replanResult.pacingSummary} - ${replanResult.workloadRedistribution}`
+          : targetGoal.notes,
+        updatedAt: new Date().toISOString(),
+      };
+
+      updatedGoal.progress = calculateGoalProgress(updatedGoal);
+
+      const nextGoals = goals.map((g) => (g.id === goalId ? updatedGoal : g));
+      persistGoals(nextGoals);
+
+      if (userRef.current) {
+        syncGoalToCloud(userRef.current.uid, updatedGoal);
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Roadmap Replanned & Calibrated',
+        message: `Deadlines and milestones adjusted. ${replanResult.pacingSummary}`,
+      });
+      return { success: true };
+    },
+    [goals, persistGoals, showToast]
+  );
+
   // PROGRESS & STREAKS
   const getDayProgress = useCallback(
     (dateKey: string) => {
@@ -1251,6 +1779,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const overallStreaks = useMemo(() => {
     return calculateOverallStreaks(habits, completions, todos, todayKey);
   }, [habits, completions, todos, todayKey]);
+
+  // DAILY GOAL CONTRIBUTIONS & ANALYTICS
+  const dailyContributions = useMemo(() => {
+    return computeDailyGoalContributions(goals, habits, completions, todos, todayKey);
+  }, [goals, habits, completions, todos, todayKey]);
+
+  const goalAnalytics = useMemo(() => {
+    return calculateGoalAnalytics(goals, todayKey);
+  }, [goals, todayKey]);
 
   // SETTINGS & STORAGE
   const updateSettings = useCallback(
@@ -1301,6 +1838,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setHabits([]);
     setCompletions([]);
     setTodos([]);
+    setGoals([]);
     setSettings(INITIAL_SETTINGS);
     setSelectedDate(getTodayKey());
 
@@ -1308,14 +1846,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       habits.forEach((h) => deleteHabitFromCloud(userRef.current!.uid, h.id));
       completions.forEach((c) => deleteCompletionFromCloud(userRef.current!.uid, c.id));
       todos.forEach((t) => deleteTodoFromCloud(userRef.current!.uid, t.id));
+      goals.forEach((g) => deleteGoalFromCloud(userRef.current!.uid, g.id));
     }
 
     showToast({
       type: 'warning',
       title: 'Data Cleared',
-      message: 'All habits, to-dos, and streaks have been cleared.',
+      message: 'All habits, to-dos, goals, and streaks have been cleared.',
     });
-  }, [habits, completions, todos, showToast]);
+  }, [habits, completions, todos, goals, showToast]);
 
   const exportDataJson = useCallback(() => {
     return Storage.exportBackupJson();
@@ -1328,11 +1867,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const loadedHabits = Storage.getHabits();
         const loadedCompletions = Storage.getCompletions();
         const loadedTodos = Storage.getTodos();
+        const loadedGoals = Storage.getGoals();
         const loadedSettings = Storage.getSettings();
 
         setHabits(loadedHabits);
         setCompletions(loadedCompletions);
         setTodos(loadedTodos);
+        setGoals(loadedGoals);
         setSettings(loadedSettings);
 
         if (userRef.current) {
@@ -1341,7 +1882,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             loadedHabits,
             loadedCompletions,
             loadedTodos,
-            loadedSettings
+            loadedSettings,
+            loadedGoals
           );
         }
 
@@ -1379,11 +1921,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     habits,
     completions,
     todos,
+    goals,
     settings,
     activeTab,
     selectedDate,
     toasts,
     isLoaded,
+    dailyContributions,
+    goalAnalytics,
 
     setActiveTab,
     setSelectedDate,
@@ -1405,6 +1950,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     toggleTodoCompletion,
     reorderTodos,
     getTodosForDate,
+
+    createGoal,
+    updateGoal,
+    deleteGoal,
+    toggleGoalStatus,
+    updateMilestone,
+    addMilestone,
+    deleteMilestone,
+    adjustGoalTracker,
+    logGoalProgressIncrement,
+    applyAIPlan,
+    applyAIReplan,
 
     todayProgress,
     selectedDateProgress,

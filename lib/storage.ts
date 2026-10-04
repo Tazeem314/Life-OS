@@ -1,8 +1,9 @@
-import { Habit, HabitCompletion, Todo, UserSettings } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal } from './types';
 
 const HABITS_STORAGE_KEY = 'life_os_habits_v1';
 const COMPLETIONS_STORAGE_KEY = 'life_os_completions_v1';
 const TODOS_STORAGE_KEY = 'life_os_todos_v1';
+const GOALS_STORAGE_KEY = 'life_os_goals_v1';
 const SETTINGS_STORAGE_KEY = 'life_os_settings_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
 
@@ -145,6 +146,29 @@ export const Storage = {
     }
   },
 
+  getGoals(): Goal[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      this.initSeedDataIfEmpty();
+      const data = localStorage.getItem(GOALS_STORAGE_KEY);
+      if (data === null) return [];
+      const parsed: Goal[] = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveGoals(goals: Goal[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify(goals));
+      localStorage.setItem(INITIALIZED_KEY, 'true');
+    } catch (e) {
+      console.error('Failed to save goals to localStorage', e);
+    }
+  },
+
   saveSettings(settings: UserSettings): void {
     if (typeof window === 'undefined') return;
     try {
@@ -164,6 +188,7 @@ export const Storage = {
     localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(COMPLETIONS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(TODOS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(INITIAL_SETTINGS));
     localStorage.setItem(INITIALIZED_KEY, 'true');
   },
@@ -190,11 +215,12 @@ export const Storage = {
   exportBackupJson(): string {
     return JSON.stringify(
       {
-        version: '1.0',
+        version: '2.0',
         exportedAt: new Date().toISOString(),
         habits: this.getHabits(),
         completions: this.getCompletions(),
         todos: this.getTodos(),
+        goals: this.getGoals(),
         settings: this.getSettings(),
       },
       null,
@@ -209,6 +235,9 @@ export const Storage = {
         this.saveHabits(parsed.habits);
         this.saveCompletions(parsed.completions || []);
         this.saveTodos(parsed.todos);
+        if (Array.isArray(parsed.goals)) {
+          this.saveGoals(parsed.goals);
+        }
         if (parsed.settings) {
           this.saveSettings(parsed.settings);
         }
