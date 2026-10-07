@@ -24,7 +24,9 @@ import {
   HelpCircle,
   Check,
   ListPlus,
+  Target,
 } from 'lucide-react';
+import { getConnectedGoalHierarchy } from '@/lib/goal-service';
 
 interface DashboardViewProps {
   onOpenNewHabit: () => void;
@@ -45,6 +47,7 @@ export function DashboardView({
     habits,
     completions,
     todos,
+    goals,
     dailyContributions,
     settings,
     todayProgress,
@@ -53,11 +56,18 @@ export function DashboardView({
     toggleTodoCompletion,
     convertHabitToTodo,
     getHabitStreakInfo,
+    toggleGoalTask,
+    toggleGoalChapter,
     setActiveTab,
   } = useLifeOS();
 
   const todayKey = getTodayKey();
   const greeting = getGreeting();
+
+  // Extract connected today's goal actions (Section 15)
+  const { todayTasks: todayGoalTasks } = React.useMemo(() => {
+    return getConnectedGoalHierarchy(goals || [], todayKey);
+  }, [goals, todayKey]);
 
   // Filter scheduled habits for today
   const scheduledHabitsToday = habits.filter((h) => {

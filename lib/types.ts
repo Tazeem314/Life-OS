@@ -77,7 +77,7 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'calendar' | 'progress' | 'settings';
 
 export interface ToastMessage {
   id: string;
@@ -230,43 +230,94 @@ export interface PersonalRecord {
 }
 
 // ==========================================
-// GOALS & ROADMAP TYPES
+// GOALS & PLANNING MODULE TYPES (53-SECTION SPEC)
 // ==========================================
 
-export type GoalTimeHorizon =
-  | 'today'
-  | 'this_week'
-  | 'this_month'
+export type GoalDurationType =
+  | '1_week'
+  | '1_month'
   | '3_months'
   | '6_months'
-  | 'this_year'
-  | 'long_term';
+  | '1_year'
+  | 'long_term'
+  | 'custom';
 
-export type GoalType =
-  | 'checkbox'
-  | 'number'
-  | 'counter'
-  | 'percentage'
-  | 'streak'
-  | 'milestones';
+export type GoalTimeHorizon = GoalDurationType;
+
+export type GoalMeasurementType =
+  | 'completion'    // Not Started -> In Progress -> Completed
+  | 'percentage'    // 0% - 100% progress
+  | 'quantity'      // e.g. Save ₹20,000 -> ₹8,500 / ₹20,000
+  | 'count'         // e.g. Read 20 books -> 7 / 20
+  | 'time'          // e.g. Study 100 hours -> 63 / 100 hours
+  | 'consistency'   // e.g. Exercise 4 times per week -> 3 / 4 completed
+  | 'curriculum'    // Study / Curriculum-based (Chapters, Topics, Tasks, Assigned effort)
+  | 'custom';
 
 export type GoalStatus =
   | 'not_started'
   | 'in_progress'
-  | 'active'
   | 'on_track'
+  | 'ahead'
   | 'at_risk'
-  | 'delayed'
+  | 'behind'
   | 'completed'
   | 'paused'
-  | 'cancelled';
+  | 'archived';
 
-export type GoalPriority = 'low' | 'medium' | 'high';
+export type GoalPriority = 'low' | 'medium' | 'high' | 'critical';
+
+export type GoalBufferPreference = 'none' | 'small' | 'normal' | 'large' | 'custom';
+
+export type GoalPlanningMethod = 'ai' | 'manual' | 'hybrid';
+
+export interface SubtopicItem {
+  id: string;
+  title: string;
+  assignedDays: number;
+  completed: boolean;
+  progress: number;
+}
+
+export interface ChapterTask {
+  id: string;
+  title: string;
+  completed: boolean;
+  dueDate?: string;
+  dayOffset?: number; // 1-indexed relative to chapter start (e.g. Day 1, Day 2, Day 3)
+}
+
+export type ChapterDifficulty = 'easy' | 'medium' | 'hard' | 'very_hard';
+
+export interface ChapterItem {
+  id: string;
+  number: number;
+  title: string;
+  description?: string;
+  difficulty: ChapterDifficulty;
+  estimatedDays: number;
+  assignedDays: number; // User custom assigned days (NEVER divided equally!)
+  startDate?: string;
+  endDate?: string;
+  progress?: number; // 0 - 100
+  status: 'not_started' | 'in_progress' | 'completed';
+  completed: boolean;
+  priority?: GoalPriority;
+  weight?: number;
+  notes?: string;
+  isFixed?: boolean; // Fixed items (e.g. Exam on Nov 15) must not be shifted automatically
+  subtopics?: SubtopicItem[];
+  tasks?: ChapterTask[];
+  revisionDays?: number;
+  practiceDays?: number;
+}
 
 export interface GoalTask {
   id: string;
   goalId?: string;
   milestoneId?: string;
+  chapterId?: string;
+  topicId?: string;
   title: string;
   completed: boolean;
   dueDate?: string; // YYYY-MM-DD
@@ -281,18 +332,51 @@ export interface Milestone {
   title: string;
   description?: string;
   deadline?: string; // YYYY-MM-DD
-  month?: string; // YYYY-MM or "October 2026"
-  week?: string; // e.g. "Week 1" or "2026-W42"
+  month?: string; // e.g. "October 2026" or YYYY-MM
+  week?: string; // e.g. "Week 1"
   status: 'not_started' | 'in_progress' | 'at_risk' | 'completed';
   progress: number; // 0 - 100
+  weight?: number;
+  priority?: GoalPriority;
+  startDate?: string;
+  endDate?: string;
+  chapters?: ChapterItem[];
   tasks?: GoalTask[];
   relatedTasks?: string[];
-  relatedTrackers?: {
-    name: string;
-    target: number;
-    current: number;
-    unit: string;
-  }[];
+}
+
+export interface GoalWeeklyReview {
+  id: string;
+  goalId: string;
+  weekLabel: string;
+  periodStart: string;
+  periodEnd: string;
+  plannedActionsCount: number;
+  completedActionsCount: number;
+  completionRate: number;
+  progressGained: number;
+  whatWentWell?: string;
+  whatWasMissed?: string;
+  whyMissed?: string;
+  nextWeekFocus?: string;
+  aiSummary?: string;
+  createdAt: string;
+}
+
+export interface GoalHistoryAuditItem {
+  id: string;
+  goalId: string;
+  changeType:
+    | 'duration_changed'
+    | 'deadline_changed'
+    | 'status_changed'
+    | 'chapter_completed'
+    | 'buffer_adjusted'
+    | 'replan_applied';
+  description: string;
+  previousValue?: string;
+  newValue?: string;
+  timestamp: string;
 }
 
 export interface GoalTracker {
@@ -302,32 +386,6 @@ export interface GoalTracker {
   target: number;
   current: number;
   unit: string;
-}
-
-export type ChapterDifficulty = 'easy' | 'medium' | 'hard' | 'lengthy';
-
-export interface ChapterTask {
-  id: string;
-  title: string;
-  completed: boolean;
-  dayOffset?: number; // 1-indexed relative to chapter start (e.g. Day 1, Day 2, Day 3)
-}
-
-export interface ChapterItem {
-  id: string;
-  number: number;
-  title: string;
-  assignedDays: number; // e.g. 3 days, 5 days, 7 days
-  difficulty?: ChapterDifficulty;
-  status: 'not_started' | 'in_progress' | 'completed';
-  completed: boolean;
-  notes?: string;
-  currentDay?: number; // e.g. Day 1 of 3
-  tasks?: ChapterTask[];
-  startDayOffset?: number; // 0-indexed day offset from start of goal
-  endDayOffset?: number; // end day offset
-  startDate?: string;
-  endDate?: string;
 }
 
 export interface AcademicMetadata {
@@ -347,29 +405,43 @@ export interface AcademicMetadata {
 
 export interface Goal {
   id: string;
+  userId?: string;
   title: string;
   description?: string;
+  why?: string; // "Why this goal matters" (Section 2 & 3)
   category: string;
   priority: GoalPriority;
   startDate: string; // YYYY-MM-DD
-  targetDate: string; // YYYY-MM-DD
+  deadline: string; // YYYY-MM-DD
+  targetDate?: string; // alias for deadline
+  durationType: GoalDurationType;
+  timeHorizon?: GoalTimeHorizon; // alias for durationType
+  measurementType: GoalMeasurementType;
+  planningMethod?: GoalPlanningMethod;
   status: GoalStatus;
-  progress: number; // 0 - 100
-  timeHorizon: GoalTimeHorizon;
-  measurementType: GoalType;
+  progress: number; // 0 - 100 (weighted progress)
+  plannedProgress: number; // expected by today (0 - 100)
+  actualProgress: number; // actual accomplished (0 - 100)
+  progressDifference: number; // actual - planned (e.g. -12%)
+  velocity?: number; // average progress % per week
+  expectedCompletionDate?: string; // calculated completion date
   targetValue: number;
   currentValue: number;
   unit?: string;
+  bufferPreference: GoalBufferPreference;
+  bufferDays: number;
+  isStudyGoal?: boolean;
   chapters?: ChapterItem[];
-  totalChapters?: number;
-  completedChapters?: number;
   milestones: Milestone[];
-  relatedTasks: string[]; // Todo IDs or titles
-  relatedHabits: string[]; // Habit IDs
-  relatedTrackers: GoalTracker[];
-  parentGoalId?: string; // For Goal Hierarchy
-  notes?: string;
+  reviews?: GoalWeeklyReview[];
+  history?: GoalHistoryAuditItem[];
+  linkedHabitIds?: string[];
+  linkedTaskIds?: string[];
+  relatedTasks?: string[];
+  relatedHabits?: string[];
+  relatedTrackers?: GoalTracker[];
   academicMetadata?: AcademicMetadata;
+  notes?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -389,11 +461,10 @@ export interface GoalAnalyticsData {
   activeGoals: number;
   onTrackGoals: number;
   atRiskGoals: number;
-  delayedGoals: number;
+  behindGoals: number;
   overallCompletionRate: number;
   milestoneCompletionRate: number;
-  byHorizon: Record<GoalTimeHorizon, number>;
-  byCategory: Record<string, { total: number; completed: number; rate: number }>;
+  plannedVsActualDiff: number;
   upcomingDeadlines: {
     goalId: string;
     goalTitle: string;
@@ -406,13 +477,16 @@ export interface GoalAnalyticsData {
 export interface AIPlanGeneratedResult {
   title: string;
   description: string;
+  why?: string;
   category: string;
-  timeHorizon: GoalTimeHorizon;
-  measurementType: GoalType;
+  durationType: GoalDurationType;
+  timeHorizon?: GoalTimeHorizon;
+  measurementType: GoalMeasurementType;
   targetValue: number;
   currentValue: number;
   unit?: string;
-  targetDate: string;
+  deadline: string;
+  targetDate?: string;
   milestones: {
     id: string;
     title: string;
@@ -421,6 +495,7 @@ export interface AIPlanGeneratedResult {
     status: 'not_started' | 'in_progress' | 'completed';
     progress: number;
   }[];
+  chapters?: ChapterItem[];
   monthlyTargets: string[];
   weeklyTargets: string[];
   suggestedTasks: string[];
@@ -431,22 +506,30 @@ export interface AIPlanGeneratedResult {
     icon: string;
     color: string;
   }[];
-  suggestedTrackers: {
+  suggestedTrackers?: {
     type: 'study' | 'workout' | 'savings' | 'custom';
     name: string;
     target: number;
     current: number;
     unit: string;
   }[];
-  academicMetadata?: AcademicMetadata;
+  bufferDaysRecommendation?: number;
   strategicAdvice: string;
+  academicMetadata?: AcademicMetadata;
 }
 
 export interface AIReplanGeneratedResult {
   pacingSummary: string;
   revisedStatus: GoalStatus;
   workloadRedistribution: string;
+  proposedChanges: {
+    id: string;
+    type: 'extend_chapter' | 'reduce_buffer' | 'shift_deadline' | 'add_practice_day' | 'move_revision';
+    description: string;
+    impact: string;
+  }[];
   adjustedMilestones: Milestone[];
+  adjustedChapters?: ChapterItem[];
   recommendedPriorities: string[];
   scheduleAdjustmentAdvice: string;
 }

@@ -17,12 +17,21 @@ import { TodoModal } from '@/components/modals/TodoModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
 import { HabitDetailAnalyticsModal } from '@/components/modals/HabitDetailAnalyticsModal';
 import { ConfirmDialog } from '@/components/modals/ConfirmDialog';
-import { Habit, Todo } from '@/lib/types';
+import { GoalsDashboard } from '@/components/goals/GoalsDashboard';
+import { GoalDetailView } from '@/components/goals/GoalDetailView';
+import { GoalCreateWizard } from '@/components/goals/GoalCreateWizard';
+import { GoalAIModal } from '@/components/goals/GoalAIModal';
+import { GoalWeeklyReviewModal } from '@/components/goals/GoalWeeklyReviewModal';
+import { Habit, Todo, Goal, GoalWeeklyReview } from '@/lib/types';
 import { motion, AnimatePresence } from 'motion/react';
 
 function LifeOSAppContent() {
   const {
     activeTab,
+    goals,
+    createGoal,
+    updateGoal,
+    deleteGoal,
     createHabit,
     updateHabit,
     deleteHabit,
@@ -41,6 +50,15 @@ function LifeOSAppContent() {
   const [isTodoModalOpen, setIsTodoModalOpen] = useState(false);
   const [todoToEdit, setTodoToEdit] = useState<Todo | null>(null);
   const [defaultTodoDate, setDefaultTodoDate] = useState<string | undefined>(undefined);
+
+  // Goals State
+  const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
+  const [isCreateGoalOpen, setIsCreateGoalOpen] = useState(false);
+  const [createGoalTemplateId, setCreateGoalTemplateId] = useState<string | undefined>(undefined);
+  const [isAICopilotOpen, setIsAICopilotOpen] = useState(false);
+  const [aiCopilotGoal, setAiCopilotGoal] = useState<Goal | null>(null);
+  const [isWeeklyReviewOpen, setIsWeeklyReviewOpen] = useState(false);
+  const [weeklyReviewGoal, setWeeklyReviewGoal] = useState<Goal | null>(null);
 
   // Habit History & Analytics Modal State
   const [selectedHistoryHabit, setSelectedHistoryHabit] = useState<Habit | null>(null);
@@ -109,6 +127,23 @@ function LifeOSAppContent() {
       isDestructive: true,
       onConfirm: () => {
         deleteTodo(todo.id);
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  };
+
+  const handleDeleteGoalPrompt = (goal: Goal) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Goal?',
+      message: `Are you sure you want to delete "${goal.title}" and its roadmaps?`,
+      confirmText: 'Delete Goal',
+      isDestructive: true,
+      onConfirm: () => {
+        deleteGoal(goal.id);
+        if (selectedGoal?.id === goal.id) {
+          setSelectedGoal(null);
+        }
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
       },
     });
@@ -207,6 +242,57 @@ function LifeOSAppContent() {
               </motion.div>
             )}
 
+            {activeTab === 'goals' && (
+              <motion.div
+                key="goals"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                {selectedGoal ? (
+                  <GoalDetailView
+                    goal={goals.find((g) => g.id === selectedGoal.id) || selectedGoal}
+                    onBack={() => setSelectedGoal(null)}
+                    onUpdateGoal={(updatedGoal) => {
+                      updateGoal(updatedGoal.id, updatedGoal);
+                      setSelectedGoal(updatedGoal);
+                    }}
+                    onDeleteGoal={handleDeleteGoalPrompt}
+                    onOpenAICopilot={(g) => {
+                      setAiCopilotGoal(g);
+                      setIsAICopilotOpen(true);
+                    }}
+                    onOpenWeeklyReview={(g) => {
+                      setWeeklyReviewGoal(g);
+                      setIsWeeklyReviewOpen(true);
+                    }}
+                    onAddLinkedTodo={(title, dueDate) => {
+                      createTodo({
+                        title,
+                        date: dueDate,
+                        priority: 'high',
+                        completed: false,
+                      });
+                    }}
+                  />
+                ) : (
+                  <GoalsDashboard
+                    goals={goals}
+                    onOpenCreateGoal={(templateId) => {
+                      setCreateGoalTemplateId(templateId);
+                      setIsCreateGoalOpen(true);
+                    }}
+                    onSelectGoal={(goal) => setSelectedGoal(goal)}
+                    onOpenAICopilot={(goal) => {
+                      setAiCopilotGoal(goal || null);
+                      setIsAICopilotOpen(true);
+                    }}
+                  />
+                )}
+              </motion.div>
+            )}
+
             {activeTab === 'calendar' && (
               <motion.div
                 key="calendar"
@@ -302,6 +388,49 @@ function LifeOSAppContent() {
         isOpen={!!selectedAnalyticsHabit}
         habit={selectedAnalyticsHabit}
         onClose={() => setSelectedAnalyticsHabit(null)}
+      />
+
+      {/* Goal Modals & Wizards */}
+      <GoalCreateWizard
+        key={createGoalTemplateId || (isCreateGoalOpen ? 'open' : 'closed')}
+        isOpen={isCreateGoalOpen}
+        onClose={() => setIsCreateGoalOpen(false)}
+        initialTemplateId={createGoalTemplateId}
+        onSaveGoal={(newGoal) => {
+          createGoal(newGoal);
+          setIsCreateGoalOpen(false);
+          setSelectedGoal(newGoal);
+        }}
+      />
+
+      <GoalAIModal
+        isOpen={isAICopilotOpen}
+        goal={aiCopilotGoal || selectedGoal || (goals.length > 0 ? goals[0] : null)}
+        onClose={() => setIsAICopilotOpen(false)}
+        onApplyPlanChanges={(goalId, changes) => {
+          updateGoal(goalId, changes);
+          if (selectedGoal && selectedGoal.id === goalId) {
+            setSelectedGoal({ ...selectedGoal, ...changes });
+          }
+        }}
+      />
+
+      <GoalWeeklyReviewModal
+        isOpen={isWeeklyReviewOpen}
+        goal={weeklyReviewGoal}
+        onClose={() => setIsWeeklyReviewOpen(false)}
+        onSaveReview={(review: GoalWeeklyReview) => {
+          if (weeklyReviewGoal) {
+            const existingReviews = weeklyReviewGoal.reviews || [];
+            const updated = {
+              ...weeklyReviewGoal,
+              reviews: [review, ...existingReviews],
+            };
+            updateGoal(weeklyReviewGoal.id, updated);
+            setSelectedGoal(updated);
+          }
+          setIsWeeklyReviewOpen(false);
+        }}
       />
 
       <ConfirmDialog
