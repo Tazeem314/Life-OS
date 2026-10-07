@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Sparkles,
   CheckSquare,
-  Target,
   Calendar,
   TrendingUp,
   Settings,
@@ -20,7 +19,6 @@ export function MobileNav() {
     { id: 'dashboard', label: 'Today', icon: LayoutDashboard },
     { id: 'habits', label: 'Habits', icon: Sparkles },
     { id: 'todos', label: 'To-Do', icon: CheckSquare },
-    { id: 'goals', label: 'Goals', icon: Target },
     { id: 'calendar', label: 'Calendar', icon: Calendar },
     { id: 'progress', label: 'Progress', icon: TrendingUp },
     { id: 'settings', label: 'Settings', icon: Settings },
@@ -32,7 +30,7 @@ export function MobileNav() {
       aria-label="Mobile Navigation"
       className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-zinc-950/95 backdrop-blur-md border-t border-zinc-200/80 dark:border-zinc-800/80 px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg select-none"
     >
-      <div className="grid grid-cols-7 items-center gap-0.5 max-w-lg mx-auto">
+      <div className="grid grid-cols-6 items-center gap-0.5 max-w-lg mx-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;

@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   Sparkles,
   CheckSquare,
-  Target,
   Calendar,
   TrendingUp,
   Settings,
@@ -23,9 +22,7 @@ interface NavItem {
 }
 
 export function Sidebar() {
-  const { activeTab, setActiveTab, todayProgress, habits, goals, user, loginWithGoogle, isOnline } = useLifeOS();
-
-  const activeGoalsCount = (goals || []).filter((g) => g.status === 'active' || g.status === 'on_track' || g.status === 'at_risk').length;
+  const { activeTab, setActiveTab, todayProgress, habits, user, loginWithGoogle, isOnline } = useLifeOS();
 
   const navItems: NavItem[] = [
     {
@@ -47,12 +44,6 @@ export function Sidebar() {
         todayProgress.totalTodos > 0
           ? `${todayProgress.completedTodos}/${todayProgress.totalTodos}`
           : undefined,
-    },
-    {
-      id: 'goals',
-      label: 'Goals & Roadmap',
-      icon: Target,
-      badge: activeGoalsCount > 0 ? activeGoalsCount : undefined,
     },
     {
       id: 'calendar',
@@ -111,7 +102,7 @@ export function Sidebar() {
       <div className="p-3 rounded-xl bg-white dark:bg-zinc-900/90 border border-zinc-200/80 dark:border-zinc-800/80 shadow-2xs mb-2">
         <div className="flex items-center justify-between text-xs text-zinc-700 dark:text-zinc-300 mb-1.5">
           <span className="font-medium">Daily Target</span>
-          <span className="font-mono font-bold tabular-nums text-zinc-900 dark:text-zinc-100">{todayProgress.percentage}%</span>
+          <span suppressHydrationWarning className="font-mono font-bold tabular-nums text-zinc-900 dark:text-zinc-100">{todayProgress.percentage}%</span>
         </div>
         <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-1.5 rounded-full overflow-hidden">
           <div
@@ -119,9 +110,9 @@ export function Sidebar() {
             style={{ width: `${todayProgress.percentage}%` }}
           />
         </div>
-        <div className="flex justify-between items-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-mono tabular-nums">
-          <span>{todayProgress.completedItems}/{todayProgress.totalItems} done</span>
-          <span className="text-[10px] font-sans text-zinc-500">{todayProgress.isFullyCompleted ? 'Done' : 'Active'}</span>
+        <div suppressHydrationWarning className="flex justify-between items-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-mono tabular-nums">
+          <span suppressHydrationWarning>{todayProgress.completedItems}/{todayProgress.totalItems} done</span>
+          <span suppressHydrationWarning className="text-[10px] font-sans text-zinc-500">{todayProgress.isFullyCompleted ? 'Done' : 'Active'}</span>
         </div>
       </div>
 

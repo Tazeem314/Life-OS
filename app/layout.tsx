@@ -83,9 +83,21 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
                   }
                 } catch (e) {}
 
+                if ('caches' in window) {
+                  caches.keys().then(function(keys) {
+                    keys.forEach(function(key) {
+                      if (key !== 'lifeos-pwa-v3') {
+                        caches.delete(key).catch(function() {});
+                      }
+                    });
+                  }).catch(function() {});
+                }
+
                 if ('serviceWorker' in navigator) {
                   window.addEventListener('load', function() {
                     navigator.serviceWorker.register('/sw.js').then(function(reg) {
+                      // Prompt immediate check for updated worker
+                      reg.update().catch(function() {});
                       // Register Background Sync if supported
                       if ('sync' in reg) {
                         reg.sync.register('sync-lifeos-data').catch(function() {});

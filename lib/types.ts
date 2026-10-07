@@ -77,7 +77,7 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'calendar' | 'progress' | 'settings';
 
 export interface ToastMessage {
   id: string;
@@ -252,6 +252,7 @@ export type GoalType =
 
 export type GoalStatus =
   | 'not_started'
+  | 'in_progress'
   | 'active'
   | 'on_track'
   | 'at_risk'
@@ -262,14 +263,29 @@ export type GoalStatus =
 
 export type GoalPriority = 'low' | 'medium' | 'high';
 
+export interface GoalTask {
+  id: string;
+  goalId?: string;
+  milestoneId?: string;
+  title: string;
+  completed: boolean;
+  dueDate?: string; // YYYY-MM-DD
+  priority?: 1 | 2 | 3;
+  week?: string; // e.g. "Week 1", "Week 2", "Week 3", "Week 4"
+  notes?: string;
+}
+
 export interface Milestone {
   id: string;
   goalId?: string;
   title: string;
   description?: string;
   deadline?: string; // YYYY-MM-DD
-  status: 'not_started' | 'in_progress' | 'completed';
+  month?: string; // YYYY-MM or "October 2026"
+  week?: string; // e.g. "Week 1" or "2026-W42"
+  status: 'not_started' | 'in_progress' | 'at_risk' | 'completed';
   progress: number; // 0 - 100
+  tasks?: GoalTask[];
   relatedTasks?: string[];
   relatedTrackers?: {
     name: string;
@@ -286,6 +302,32 @@ export interface GoalTracker {
   target: number;
   current: number;
   unit: string;
+}
+
+export type ChapterDifficulty = 'easy' | 'medium' | 'hard' | 'lengthy';
+
+export interface ChapterTask {
+  id: string;
+  title: string;
+  completed: boolean;
+  dayOffset?: number; // 1-indexed relative to chapter start (e.g. Day 1, Day 2, Day 3)
+}
+
+export interface ChapterItem {
+  id: string;
+  number: number;
+  title: string;
+  assignedDays: number; // e.g. 3 days, 5 days, 7 days
+  difficulty?: ChapterDifficulty;
+  status: 'not_started' | 'in_progress' | 'completed';
+  completed: boolean;
+  notes?: string;
+  currentDay?: number; // e.g. Day 1 of 3
+  tasks?: ChapterTask[];
+  startDayOffset?: number; // 0-indexed day offset from start of goal
+  endDayOffset?: number; // end day offset
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface AcademicMetadata {
@@ -318,6 +360,9 @@ export interface Goal {
   targetValue: number;
   currentValue: number;
   unit?: string;
+  chapters?: ChapterItem[];
+  totalChapters?: number;
+  completedChapters?: number;
   milestones: Milestone[];
   relatedTasks: string[]; // Todo IDs or titles
   relatedHabits: string[]; // Habit IDs
