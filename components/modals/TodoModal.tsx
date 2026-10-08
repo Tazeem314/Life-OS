@@ -6,6 +6,16 @@ import { Todo, Priority } from '@/lib/types';
 import { getTodayKey } from '@/lib/date-utils';
 import { X, Calendar, Clock, Flag, AlignLeft } from 'lucide-react';
 
+export const TODO_CATEGORIES = [
+  'General',
+  'Work',
+  'Personal',
+  'Study',
+  'Health',
+  'Finance',
+  'Urgent',
+] as const;
+
 interface TodoModalProps {
   isOpen: boolean;
   todoToEdit?: Todo | null;
@@ -25,6 +35,7 @@ function TodoFormInner({ todoToEdit, defaultDate, onClose, onSave }: FormInnerPr
   const [title, setTitle] = useState(todoToEdit?.title || '');
   const [date, setDate] = useState(todoToEdit?.date || defaultDate || getTodayKey());
   const [priority, setPriority] = useState<Priority>(todoToEdit?.priority || 'medium');
+  const [category, setCategory] = useState<string>(todoToEdit?.category || 'General');
   const [dueTime, setDueTime] = useState(todoToEdit?.dueTime || '');
   const [notes, setNotes] = useState(todoToEdit?.notes || '');
   const [errorMessage, setErrorMessage] = useState('');
@@ -44,6 +55,7 @@ function TodoFormInner({ todoToEdit, defaultDate, onClose, onSave }: FormInnerPr
       title: title.trim(),
       date,
       priority,
+      category: category || 'General',
       dueTime: dueTime || undefined,
       notes: notes.trim() || undefined,
       completed: todoToEdit ? todoToEdit.completed : false,
@@ -180,6 +192,29 @@ function TodoFormInner({ todoToEdit, defaultDate, onClose, onSave }: FormInnerPr
                 <span className="w-2 h-2 rounded-full bg-rose-500" />
                 High
               </button>
+            </div>
+          </div>
+
+          {/* Category Selection */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 mb-1.5">
+              Category
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {TODO_CATEGORIES.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setCategory(cat)}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition ${
+                    category === cat
+                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-700'
+                      : 'border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
             </div>
           </div>
 

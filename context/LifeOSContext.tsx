@@ -51,6 +51,129 @@ const filterCleanCompletions = (list: HabitCompletion[]) =>
   (list || []).filter((c) => c && !DEMO_COMPLETION_IDS.has(c.id) && !DEMO_HABIT_IDS.has(c.habitId));
 const filterCleanTodos = (list: Todo[]) => (list || []).filter((t) => t && !DEMO_TODO_IDS.has(t.id));
 
+const mergeRemoteHabits = (
+  local: Habit[],
+  remote: Habit[],
+  deletedIds: Set<string>
+): { merged: Habit[]; newToUpload: Habit[] } => {
+  const map = new Map<string, Habit>();
+  const newToUpload: Habit[] = [];
+
+  for (const h of remote || []) {
+    if (h && h.id && !deletedIds.has(h.id) && !DEMO_HABIT_IDS.has(h.id)) {
+      map.set(h.id, h);
+    }
+  }
+
+  for (const l of local || []) {
+    if (l && l.id && !deletedIds.has(l.id) && !DEMO_HABIT_IDS.has(l.id)) {
+      if (!map.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()), newToUpload };
+};
+
+const mergeRemoteTodos = (
+  local: Todo[],
+  remote: Todo[],
+  deletedIds: Set<string>
+): { merged: Todo[]; newToUpload: Todo[] } => {
+  const map = new Map<string, Todo>();
+  const newToUpload: Todo[] = [];
+
+  for (const t of remote || []) {
+    if (t && t.id && !deletedIds.has(t.id) && !DEMO_TODO_IDS.has(t.id)) {
+      map.set(t.id, t);
+    }
+  }
+
+  for (const l of local || []) {
+    if (l && l.id && !deletedIds.has(l.id) && !DEMO_TODO_IDS.has(l.id)) {
+      if (!map.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  const merged = Array.from(map.values()).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  return { merged, newToUpload };
+};
+
+const mergeRemoteGoals = (
+  local: Goal[],
+  remote: Goal[],
+  deletedIds: Set<string>
+): { merged: Goal[]; newToUpload: Goal[] } => {
+  const map = new Map<string, Goal>();
+  const newToUpload: Goal[] = [];
+
+  for (const g of remote || []) {
+    if (g && g.id && !deletedIds.has(g.id)) {
+      map.set(g.id, g);
+    }
+  }
+
+  for (const l of local || []) {
+    if (l && l.id && !deletedIds.has(l.id)) {
+      if (!map.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()), newToUpload };
+};
+
+const mergeRemoteCompletions = (
+  local: HabitCompletion[],
+  remote: HabitCompletion[],
+  deletedIds: Set<string>
+): { merged: HabitCompletion[]; newToUpload: HabitCompletion[] } => {
+  const map = new Map<string, HabitCompletion>();
+  const newToUpload: HabitCompletion[] = [];
+
+  for (const c of remote || []) {
+    if (c && c.id && !deletedIds.has(c.id) && !DEMO_COMPLETION_IDS.has(c.id)) {
+      map.set(c.id, c);
+    }
+  }
+
+  for (const l of local || []) {
+    if (l && l.id && !deletedIds.has(l.id) && !DEMO_COMPLETION_IDS.has(l.id)) {
+      if (!map.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()), newToUpload };
+};
+
 const purgeCloudDemoItems = async (
   userId: string,
   rawHabits: Habit[],
@@ -92,6 +215,7 @@ import {
   signInWithGoogle,
   logoutUser,
   onAuthStateChanged,
+  reconnectFirestore,
   User,
 } from '@/lib/firebase';
 import {
@@ -110,6 +234,7 @@ import {
   subscribeToUserCloudData,
   syncAllLocalDataToCloud,
   fetchAllCloudData,
+  flushPendingCloudWrites,
 } from '@/lib/firestore-service';
 import firebaseConfig from '@/firebase-applet-config.json';
 
@@ -253,85 +378,31 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, []);
 
-  // Connectivity listener
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Ref to track active user for callback closures
+  // State refs to guarantee fresh data in asynchronous callbacks
   const userRef = useRef<User | null>(null);
-  useEffect(() => {
-    userRef.current = user;
-  }, [user]);
+  const habitsRef = useRef<Habit[]>(habits);
+  const completionsRef = useRef<HabitCompletion[]>(completions);
+  const todosRef = useRef<Todo[]>(todos);
+  const goalsRef = useRef<Goal[]>(goals);
+  const settingsRef = useRef<UserSettings>(settings);
 
-  // Debounced auto-sync helper that synchronizes all local data to Firestore
-  const autoSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const triggerDebouncedAutoSync = useCallback(() => {
-    if (!userRef.current || (typeof window !== 'undefined' && !navigator.onLine)) return;
-    if (autoSyncTimeoutRef.current) {
-      clearTimeout(autoSyncTimeoutRef.current);
-    }
-    autoSyncTimeoutRef.current = setTimeout(async () => {
-      if (!userRef.current) return;
-      try {
-        const currentHabits = Storage.getHabits();
-        const currentCompletions = Storage.getCompletions();
-        const currentTodos = Storage.getTodos();
-        const currentGoals = Storage.getGoals();
-        const currentSettings = Storage.getSettings();
+  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => { habitsRef.current = habits; }, [habits]);
+  useEffect(() => { completionsRef.current = completions; }, [completions]);
+  useEffect(() => { todosRef.current = todos; }, [todos]);
+  useEffect(() => { goalsRef.current = goals; }, [goals]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
-        const success = await syncAllLocalDataToCloud(
-          userRef.current.uid,
-          currentHabits,
-          currentCompletions,
-          currentTodos,
-          currentSettings,
-          currentGoals
-        );
-        if (success) {
-          setLastSyncedAt(new Date());
-        }
-      } catch (err) {
-        console.warn('Debounced auto-sync error:', err);
-      }
-    }, 1200);
-  }, []);
-
-  // Periodic heartbeat auto-sync (every 25 seconds) when user is authenticated & online
+  // Lightweight heartbeat: ensures offline writes are flushed without locking the client
   useEffect(() => {
     if (!user || !isOnline) return;
 
-    const interval = setInterval(async () => {
-      if (!userRef.current) return;
-      try {
-        const currentHabits = Storage.getHabits();
-        const currentCompletions = Storage.getCompletions();
-        const currentTodos = Storage.getTodos();
-        const currentGoals = Storage.getGoals();
-        const currentSettings = Storage.getSettings();
-
-        const ok = await syncAllLocalDataToCloud(
-          userRef.current.uid,
-          currentHabits,
-          currentCompletions,
-          currentTodos,
-          currentSettings,
-          currentGoals
-        );
-        if (ok) {
-          setLastSyncedAt(new Date());
-        }
-      } catch (err) {
-        console.warn('Heartbeat auto-sync skipped:', err);
+    const interval = setInterval(() => {
+      const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
+      if (uid && navigator.onLine) {
+        flushPendingCloudWrites(uid).catch(() => {});
       }
-    }, 25000);
+    }, 20000);
 
     return () => clearInterval(interval);
   }, [user, isOnline]);
@@ -349,81 +420,30 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Firebase Auth State Listener & Cloud Sync
+  // Broadcast channel for instantaneous cross-tab synchronization
+  const broadcastLocalChange = useCallback(() => {
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('lifeos_cloud_sync');
+        bc.postMessage({ type: 'CHANGE_MADE', timestamp: Date.now() });
+        bc.close();
+      }
+    } catch {}
+  }, []);
+
+  // Firebase Auth State Listener & Immediate Real-time Cloud Sync
   useEffect(() => {
     let unsubscribeFirestore: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+      userRef.current = currentUser;
       setAuthLoading(false);
 
       if (currentUser) {
-        // Save profile
-        await saveUserProfile(currentUser);
+        Storage.setCachedUserId(currentUser.uid);
 
-        // Fetch raw cloud data and purge legacy demo items from Firestore if present
-        const rawCloudData = await fetchAllCloudData(currentUser.uid);
-        if (rawCloudData) {
-          await purgeCloudDemoItems(currentUser.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
-        }
-
-        const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
-        const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
-        const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
-        const cloudGoals = rawCloudData?.goals || [];
-
-        const currentHabits = Storage.getHabits();
-        const currentCompletions = Storage.getCompletions();
-        const currentTodos = Storage.getTodos();
-        const currentGoals = Storage.getGoals();
-        const currentSettings = Storage.getSettings();
-
-        const hasAnyCloudData =
-          cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0 || cloudGoals.length > 0;
-
-        if (hasAnyCloudData) {
-          // Cloud is authoritative for authenticated accounts: adopt clean cloud data directly
-          setHabits(cloudHabits);
-          Storage.saveHabits(cloudHabits);
-
-          setCompletions(cloudCompletions);
-          Storage.saveCompletions(cloudCompletions);
-
-          const sortedTodos = [...cloudTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-          setTodos(sortedTodos);
-          Storage.saveTodos(sortedTodos);
-
-          if (cloudGoals.length > 0) {
-            setGoals(cloudGoals);
-            Storage.saveGoals(cloudGoals);
-          }
-
-          if (rawCloudData?.settings) {
-            setSettings(rawCloudData.settings);
-            Storage.saveSettings(rawCloudData.settings);
-          }
-          setLastSyncedAt(new Date());
-        } else {
-          // Brand new account or empty cloud: upload clean local items if present
-          if (
-            currentHabits.length > 0 ||
-            currentCompletions.length > 0 ||
-            currentTodos.length > 0 ||
-            currentGoals.length > 0
-          ) {
-            await uploadInitialDataToCloud(
-              currentUser.uid,
-              currentHabits,
-              currentCompletions,
-              currentTodos,
-              currentSettings,
-              currentGoals
-            );
-          }
-          setLastSyncedAt(new Date());
-        }
-
-        // Subscribe to real-time updates from Firestore
+        // 1. Immediately subscribe to real-time updates from Firestore with non-destructive merge
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
         }
@@ -431,31 +451,55 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         unsubscribeFirestore = subscribeToUserCloudData(currentUser.uid, {
           onHabits: (cloudHabits) => {
             if (!cloudHabits) return;
-            const clean = filterCleanHabits(cloudHabits);
-            setHabits(clean);
-            Storage.saveHabits(clean);
+            const deleted = Storage.getDeletedIds();
+            const currentLocal = habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits();
+            const { merged, newToUpload } = mergeRemoteHabits(currentLocal, cloudHabits, deleted);
+            setHabits(merged);
+            Storage.saveHabits(merged);
             setLastSyncedAt(new Date());
+
+            if (newToUpload.length > 0) {
+              newToUpload.forEach((h) => syncHabitToCloud(currentUser.uid, h));
+            }
           },
           onCompletions: (cloudCompletions) => {
             if (!cloudCompletions) return;
-            const clean = filterCleanCompletions(cloudCompletions);
-            setCompletions(clean);
-            Storage.saveCompletions(clean);
+            const deleted = Storage.getDeletedIds();
+            const currentLocal = completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions();
+            const { merged, newToUpload } = mergeRemoteCompletions(currentLocal, cloudCompletions, deleted);
+            setCompletions(merged);
+            Storage.saveCompletions(merged);
             setLastSyncedAt(new Date());
+
+            if (newToUpload.length > 0) {
+              newToUpload.forEach((c) => syncCompletionToCloud(currentUser.uid, c));
+            }
           },
           onTodos: (cloudTodos) => {
             if (!cloudTodos) return;
-            const clean = filterCleanTodos(cloudTodos);
-            const sorted = [...clean].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-            setTodos(sorted);
-            Storage.saveTodos(sorted);
+            const deleted = Storage.getDeletedIds();
+            const currentLocal = todosRef.current.length > 0 ? todosRef.current : Storage.getTodos();
+            const { merged, newToUpload } = mergeRemoteTodos(currentLocal, cloudTodos, deleted);
+            setTodos(merged);
+            Storage.saveTodos(merged);
             setLastSyncedAt(new Date());
+
+            if (newToUpload.length > 0) {
+              newToUpload.forEach((t) => syncTodoToCloud(currentUser.uid, t));
+            }
           },
           onGoals: (cloudGoals) => {
             if (!cloudGoals) return;
-            setGoals(cloudGoals);
-            Storage.saveGoals(cloudGoals);
+            const deleted = Storage.getDeletedIds();
+            const currentLocal = goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals();
+            const { merged, newToUpload } = mergeRemoteGoals(currentLocal, cloudGoals, deleted);
+            setGoals(merged);
+            Storage.saveGoals(merged);
             setLastSyncedAt(new Date());
+
+            if (newToUpload.length > 0) {
+              newToUpload.forEach((g) => syncGoalToCloud(currentUser.uid, g));
+            }
           },
           onSettings: (cloudSettings) => {
             if (!cloudSettings) return;
@@ -464,6 +508,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             setLastSyncedAt(new Date());
           },
         });
+
+        // 2. In background, save profile & flush any queued offline writes
+        saveUserProfile(currentUser).catch(() => {});
+        flushPendingCloudWrites(currentUser.uid).catch(() => {});
       } else {
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
@@ -472,11 +520,64 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
+    // Cross-tab broadcast listener
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('lifeos_cloud_sync');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'CHANGE_MADE') {
+            const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
+            if (uid) {
+              reconnectFirestore();
+              flushPendingCloudWrites(uid).catch(() => {});
+            }
+          }
+        };
+      }
+    } catch {}
+
+    // Resilient lifecycle listeners: device unlock, mobile foreground, tab focus, network recovery
+    const handleForegroundWake = () => {
+      const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
+      if (uid) {
+        reconnectFirestore();
+        flushPendingCloudWrites(uid).catch(() => {});
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleForegroundWake();
+      }
+    };
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      handleForegroundWake();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleForegroundWake);
+    window.addEventListener('pageshow', handleForegroundWake);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     return () => {
       unsubscribeAuth();
       if (unsubscribeFirestore) {
         unsubscribeFirestore();
       }
+      bc?.close();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleForegroundWake);
+      window.removeEventListener('pageshow', handleForegroundWake);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -485,56 +586,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     try {
       setAuthLoading(true);
       const signedInUser = await signInWithGoogle();
+      userRef.current = signedInUser;
+      setUser(signedInUser);
       await saveUserProfile(signedInUser);
 
-      // Explicitly pull cloud data for the signed-in user and purge demo items
-      const rawCloudData = await fetchAllCloudData(signedInUser.uid);
-      if (rawCloudData) {
-        await purgeCloudDemoItems(signedInUser.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
-      }
-
-      const cloudHabits = rawCloudData ? filterCleanHabits(rawCloudData.habits) : [];
-      const cloudCompletions = rawCloudData ? filterCleanCompletions(rawCloudData.completions) : [];
-      const cloudTodos = rawCloudData ? filterCleanTodos(rawCloudData.todos) : [];
-
-      const currentHabits = Storage.getHabits();
-      const currentCompletions = Storage.getCompletions();
-      const currentTodos = Storage.getTodos();
-      const currentSettings = Storage.getSettings();
-
-      if (cloudHabits.length > 0 || cloudTodos.length > 0 || cloudCompletions.length > 0) {
-        setHabits(cloudHabits);
-        Storage.saveHabits(cloudHabits);
-
-        setCompletions(cloudCompletions);
-        Storage.saveCompletions(cloudCompletions);
-
-        const sortedTodos = [...cloudTodos].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        setTodos(sortedTodos);
-        Storage.saveTodos(sortedTodos);
-
-        if (rawCloudData?.settings) {
-          setSettings(rawCloudData.settings);
-          Storage.saveSettings(rawCloudData.settings);
-        }
-        setLastSyncedAt(new Date());
-      } else {
-        if (currentHabits.length > 0 || currentCompletions.length > 0 || currentTodos.length > 0) {
-          await uploadInitialDataToCloud(
-            signedInUser.uid,
-            currentHabits,
-            currentCompletions,
-            currentTodos,
-            currentSettings
-          );
-        }
-        setLastSyncedAt(new Date());
-      }
+      // Trigger immediate network reconnect and flush
+      reconnectFirestore();
+      flushPendingCloudWrites(signedInUser.uid).catch(() => {});
 
       showToast({
         type: 'success',
-        title: 'Gmail Connected & Synced',
-        message: `Welcome, ${signedInUser.displayName || signedInUser.email}! Your habits & tasks are synced across all devices.`,
+        title: 'Gmail Connected & Auto-Synced',
+        message: `Welcome, ${signedInUser.displayName || signedInUser.email}! Changes will now sync instantly across all devices.`,
       });
     } catch (error: any) {
       if (error?.code === 'auth/popup-closed-by-user') {
@@ -570,6 +633,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     try {
       await logoutUser();
       setUser(null);
+      userRef.current = null;
+      Storage.setCachedUserId(null);
       showToast({
         type: 'info',
         title: 'Signed Out',
@@ -598,14 +663,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
+      const currentGoals = Storage.getGoals();
       const currentSettings = Storage.getSettings();
+
+      await flushPendingCloudWrites(userRef.current.uid);
 
       const success = await syncAllLocalDataToCloud(
         userRef.current.uid,
         currentHabits,
         currentCompletions,
         currentTodos,
-        currentSettings
+        currentSettings,
+        currentGoals
       );
 
       if (success) {
@@ -632,97 +701,6 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Connectivity, Focus, Tab Visibility, and Service Worker Background Sync listeners
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleOnline = async () => {
-      setIsOnline(true);
-      if (userRef.current) {
-        setIsSyncing(true);
-        try {
-          await performBackgroundSync(true);
-          showToast({
-            type: 'success',
-            title: 'Back Online & Synced',
-            message: 'Your offline habits and to-dos were automatically synced to the cloud in the background.',
-          });
-        } finally {
-          setIsSyncing(false);
-        }
-      } else {
-        showToast({
-          type: 'info',
-          title: 'Internet Restored',
-          message: 'You are back online. All changes are stored locally on your device.',
-        });
-      }
-    };
-
-    const handleOffline = () => {
-      setIsOnline(false);
-      showToast({
-        type: 'info',
-        title: 'Offline Mode Active',
-        message: 'No internet connection. You can continue using LifeOS normally — everything is saved on your device and will auto-sync when you reconnect.',
-      });
-    };
-
-    // When user unlocks device, brings app to foreground, or focuses the tab
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine && userRef.current) {
-        performBackgroundSync(true);
-      }
-    };
-
-    const handleFocus = () => {
-      if (navigator.onLine && userRef.current) {
-        performBackgroundSync(true);
-      }
-    };
-
-    // Service Worker message listener (for background sync trigger)
-    const handleSWMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'TRIGGER_BACKGROUND_SYNC') {
-        if (navigator.onLine && userRef.current) {
-          performBackgroundSync(true);
-        }
-      }
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleFocus);
-
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', handleSWMessage);
-    }
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.removeEventListener('message', handleSWMessage);
-      }
-    };
-  }, [showToast, performBackgroundSync]);
-
-  // Periodic heartbeat background auto-sync (every 20 seconds) when user is authenticated & online
-  useEffect(() => {
-    if (!user || !isOnline) return;
-
-    const interval = setInterval(() => {
-      if (userRef.current && navigator.onLine) {
-        performBackgroundSync(true);
-      }
-    }, 20000);
-
-    return () => clearInterval(interval);
-  }, [user, isOnline, performBackgroundSync]);
-
   // Manual trigger to force cloud sync
   const syncNow = useCallback(async () => {
     if (!userRef.current) {
@@ -747,21 +725,25 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentHabits = Storage.getHabits();
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
+      const currentGoals = Storage.getGoals();
       const currentSettings = Storage.getSettings();
+
+      await flushPendingCloudWrites(userRef.current.uid);
 
       const success = await syncAllLocalDataToCloud(
         userRef.current.uid,
         currentHabits,
         currentCompletions,
         currentTodos,
-        currentSettings
+        currentSettings,
+        currentGoals
       );
 
       if (success) {
         showToast({
           type: 'success',
           title: 'Cloud Sync Complete',
-          message: 'All your habits, to-dos, and streaks are up to date in the cloud.',
+          message: 'All your habits, to-dos, goals, and streaks are up to date in the cloud.',
         });
       } else {
         showToast({
@@ -821,6 +803,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         setTodos(sortedTodos);
         Storage.saveTodos(sortedTodos);
 
+        if (Array.isArray(rawCloudData.goals)) {
+          setGoals(rawCloudData.goals);
+          Storage.saveGoals(rawCloudData.goals);
+        }
+
         if (rawCloudData.settings) {
           setSettings(rawCloudData.settings);
           Storage.saveSettings(rawCloudData.settings);
@@ -828,7 +815,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         showToast({
           type: 'success',
           title: 'Cloud Data Restored',
-          message: 'Successfully pulled and restored your latest habits and tasks from your Gmail account!',
+          message: 'Successfully pulled and restored your latest habits, goals, and tasks from your Gmail account!',
         });
       } else {
         showToast({
@@ -902,30 +889,26 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const persistHabits = useCallback((newHabits: Habit[]) => {
     setHabits(newHabits);
     Storage.saveHabits(newHabits);
-    triggerDebouncedAutoSync();
     requestServiceWorkerBackgroundSync();
-  }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
+  }, [requestServiceWorkerBackgroundSync]);
 
   const persistCompletions = useCallback((newCompletions: HabitCompletion[]) => {
     setCompletions(newCompletions);
     Storage.saveCompletions(newCompletions);
-    triggerDebouncedAutoSync();
     requestServiceWorkerBackgroundSync();
-  }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
+  }, [requestServiceWorkerBackgroundSync]);
 
   const persistTodos = useCallback((newTodos: Todo[]) => {
     setTodos(newTodos);
     Storage.saveTodos(newTodos);
-    triggerDebouncedAutoSync();
     requestServiceWorkerBackgroundSync();
-  }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
+  }, [requestServiceWorkerBackgroundSync]);
 
   const persistSettings = useCallback((newSettings: UserSettings) => {
     setSettings(newSettings);
     Storage.saveSettings(newSettings);
-    triggerDebouncedAutoSync();
     requestServiceWorkerBackgroundSync();
-  }, [triggerDebouncedAutoSync, requestServiceWorkerBackgroundSync]);
+  }, [requestServiceWorkerBackgroundSync]);
 
   // Navigation handlers
   const goToToday = useCallback(() => {
@@ -939,6 +922,24 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const goToNextDay = useCallback(() => {
     setSelectedDate((prev) => addDays(prev, 1));
   }, []);
+
+  // Dedicated helper for instant cloud push with status & cross-tab broadcast
+  const syncToCloudNow = useCallback(
+    (action: (uid: string) => Promise<any> | void) => {
+      const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
+      if (uid) {
+        Promise.resolve(action(uid))
+          .then(() => {
+            setLastSyncedAt(new Date());
+            broadcastLocalChange();
+          })
+          .catch((err) => {
+            console.warn('Sync push error (preserved in pending queue):', err);
+          });
+      }
+    },
+    [broadcastLocalChange]
+  );
 
   // HABIT OPERATIONS
   const createHabit = useCallback(
@@ -955,12 +956,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         updatedAt: new Date().toISOString(),
       };
 
+      Storage.unmarkDeleted(newHabit.id);
       const updated = [newHabit, ...habits];
       persistHabits(updated);
 
-      if (userRef.current) {
-        syncHabitToCloud(userRef.current.uid, newHabit);
-      }
+      syncToCloudNow((uid) => syncHabitToCloud(uid, newHabit));
 
       showToast({
         type: 'success',
@@ -969,7 +969,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [habits, showToast, persistHabits]
+    [habits, showToast, persistHabits, syncToCloudNow]
   );
 
   const updateHabit = useCallback(
@@ -994,8 +994,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistHabits(updated);
 
-      if (userRef.current && modifiedHabit) {
-        syncHabitToCloud(userRef.current.uid, modifiedHabit);
+      if (modifiedHabit) {
+        syncToCloudNow((uid) => syncHabitToCloud(uid, modifiedHabit!));
       }
 
       showToast({
@@ -1005,11 +1005,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [habits, showToast, persistHabits]
+    [habits, showToast, persistHabits, syncToCloudNow]
   );
 
   const deleteHabit = useCallback(
     async (id: string) => {
+      Storage.markDeleted(id);
       const target = habits.find((h) => h.id === id);
       const updated = habits.filter((h) => h.id !== id);
       const updatedCompletions = completions.filter((c) => c.habitId !== id);
@@ -1017,13 +1018,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       persistHabits(updated);
       persistCompletions(updatedCompletions);
 
-      if (userRef.current) {
-        try {
-          await deleteHabitFromCloud(userRef.current.uid, id);
-        } catch (err) {
-          console.error('Failed to delete habit from cloud:', err);
-        }
-      }
+      syncToCloudNow((uid) => deleteHabitFromCloud(uid, id));
 
       showToast({
         type: 'info',
@@ -1031,7 +1026,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: target ? `"${target.name}" was removed.` : 'Habit removed.',
       });
     },
-    [habits, completions, showToast, persistHabits, persistCompletions]
+    [habits, completions, showToast, persistHabits, persistCompletions, syncToCloudNow]
   );
 
   const togglePauseHabit = useCallback(
@@ -1049,8 +1044,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       persistHabits(updated);
 
-      if (userRef.current && modified) {
-        syncHabitToCloud(userRef.current.uid, modified);
+      if (modified) {
+        syncToCloudNow((uid) => syncHabitToCloud(uid, modified!));
       }
 
       showToast({
@@ -1059,7 +1054,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: `"${target.name}" is now ${nextStatus}.`,
       });
     },
-    [habits, showToast, persistHabits]
+    [habits, showToast, persistHabits, syncToCloudNow]
   );
 
   const toggleHabitCompletion = useCallback(
@@ -1069,12 +1064,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       let newCompletions: HabitCompletion[];
       if (existing) {
         // Toggle OFF
+        Storage.markDeleted(existing.id);
         newCompletions = completions.filter((c) => c.id !== existing.id);
         persistCompletions(newCompletions);
 
-        if (userRef.current) {
-          deleteCompletionFromCloud(userRef.current.uid, existing.id);
-        }
+        syncToCloudNow((uid) => deleteCompletionFromCloud(uid, existing.id));
       } else {
         // Toggle ON
         const newCompletion: HabitCompletion = {
@@ -1083,12 +1077,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           date: dateKey,
           completedAt: new Date().toISOString(),
         };
+        Storage.unmarkDeleted(newCompletion.id);
         newCompletions = [...completions, newCompletion];
         persistCompletions(newCompletions);
 
-        if (userRef.current) {
-          syncCompletionToCloud(userRef.current.uid, newCompletion);
-        }
+        syncToCloudNow((uid) => syncCompletionToCloud(uid, newCompletion));
 
         const prog = calculateDayProgress(dateKey, habits, newCompletions, todos);
         if (prog.isFullyCompleted) {
@@ -1101,7 +1094,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [habits, completions, todos, selectedDate, triggerCelebration, showToast, persistCompletions]
+    [habits, completions, todos, selectedDate, triggerCelebration, showToast, persistCompletions, syncToCloudNow]
   );
 
   const getHabitStreakInfo = useCallback(
@@ -1136,9 +1129,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const updated = [newTodo, ...todos];
       persistTodos(updated);
 
-      if (userRef.current) {
-        syncTodoToCloud(userRef.current.uid, newTodo);
-      }
+      syncToCloudNow((uid) => syncTodoToCloud(uid, newTodo));
 
       showToast({
         type: 'success',
@@ -1146,7 +1137,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: `"${habit.name}" was added to your task list for ${targetDate === getTodayKey() ? 'Today' : targetDate}.`,
       });
     },
-    [habits, todos, selectedDate, showToast, persistTodos]
+    [habits, todos, selectedDate, showToast, persistTodos, syncToCloudNow]
   );
 
   // TODO OPERATIONS
@@ -1168,12 +1159,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         updatedAt: new Date().toISOString(),
       };
 
+      Storage.unmarkDeleted(newTodo.id);
       const updated = [newTodo, ...todos];
       persistTodos(updated);
 
-      if (userRef.current) {
-        syncTodoToCloud(userRef.current.uid, newTodo);
-      }
+      syncToCloudNow((uid) => syncTodoToCloud(uid, newTodo));
 
       showToast({
         type: 'success',
@@ -1182,7 +1172,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [todos, showToast, persistTodos]
+    [todos, showToast, persistTodos, syncToCloudNow]
   );
 
   const updateTodo = useCallback(
@@ -1207,8 +1197,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistTodos(updated);
 
-      if (userRef.current && modified) {
-        syncTodoToCloud(userRef.current.uid, modified);
+      if (modified) {
+        syncToCloudNow((uid) => syncTodoToCloud(uid, modified!));
       }
 
       showToast({
@@ -1218,18 +1208,17 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [todos, showToast, persistTodos]
+    [todos, showToast, persistTodos, syncToCloudNow]
   );
 
   const deleteTodo = useCallback(
     (id: string) => {
+      Storage.markDeleted(id);
       const target = todos.find((t) => t.id === id);
       const updated = todos.filter((t) => t.id !== id);
       persistTodos(updated);
 
-      if (userRef.current) {
-        deleteTodoFromCloud(userRef.current.uid, id);
-      }
+      syncToCloudNow((uid) => deleteTodoFromCloud(uid, id));
 
       showToast({
         type: 'info',
@@ -1237,7 +1226,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: target ? `"${target.title}" was deleted.` : 'Task deleted.',
       });
     },
-    [todos, showToast, persistTodos]
+    [todos, showToast, persistTodos, syncToCloudNow]
   );
 
   const toggleTodoCompletion = useCallback(
@@ -1256,8 +1245,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       persistTodos(updated);
 
-      if (userRef.current && modified) {
-        syncTodoToCloud(userRef.current.uid, modified);
+      if (modified) {
+        syncToCloudNow((uid) => syncTodoToCloud(uid, modified!));
       }
 
       if (nextCompleted) {
@@ -1272,7 +1261,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [todos, habits, completions, triggerCelebration, showToast, persistTodos]
+    [todos, habits, completions, triggerCelebration, showToast, persistTodos, syncToCloudNow]
   );
 
   const reorderTodos = useCallback(
@@ -1287,11 +1276,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const fullList = [...otherTodos, ...updatedDateTodos];
       persistTodos(fullList);
 
-      if (userRef.current) {
-        updatedDateTodos.forEach((t) => syncTodoToCloud(userRef.current!.uid, t));
-      }
+      syncToCloudNow(async (uid) => {
+        for (const t of updatedDateTodos) {
+          await syncTodoToCloud(uid, t);
+        }
+      });
     },
-    [todos, persistTodos]
+    [todos, persistTodos, syncToCloudNow]
   );
 
   const getTodosForDate = useCallback(
@@ -1318,12 +1309,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           updatedAt: now,
         };
 
+        Storage.unmarkDeleted(id);
         const updated = [newGoal, ...goals];
         persistGoals(updated);
 
-        if (userRef.current) {
-          syncGoalToCloud(userRef.current.uid, newGoal).catch(() => {});
-        }
+        syncToCloudNow((uid) => syncGoalToCloud(uid, newGoal));
 
         showToast({
           type: 'success',
@@ -1336,7 +1326,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: err?.message || 'Failed to create goal' };
       }
     },
-    [goals, persistGoals, showToast]
+    [goals, persistGoals, showToast, syncToCloudNow]
   );
 
   const createGoalSimple = useCallback(
@@ -1396,8 +1386,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
         persistGoals(updated);
 
-        if (userRef.current && modifiedGoal) {
-          syncGoalToCloud(userRef.current.uid, modifiedGoal).catch(() => {});
+        if (modifiedGoal) {
+          syncToCloudNow((uid) => syncGoalToCloud(uid, modifiedGoal!));
         }
 
         showToast({
@@ -1411,18 +1401,17 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: err?.message || 'Failed to update goal' };
       }
     },
-    [goals, persistGoals, showToast]
+    [goals, persistGoals, showToast, syncToCloudNow]
   );
 
   const deleteGoal = useCallback(
     (id: string) => {
+      Storage.markDeleted(id);
       const target = goals.find((g) => g.id === id);
       const updated = goals.filter((g) => g.id !== id);
       persistGoals(updated);
 
-      if (userRef.current) {
-        deleteGoalFromCloud(userRef.current.uid, id).catch(() => {});
-      }
+      syncToCloudNow((uid) => deleteGoalFromCloud(uid, id));
 
       showToast({
         type: 'info',
@@ -1430,7 +1419,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: target ? `"${target.title}" was deleted.` : undefined,
       });
     },
-    [goals, persistGoals, showToast]
+    [goals, persistGoals, showToast, syncToCloudNow]
   );
 
   const toggleGoalTask = useCallback(
@@ -1444,8 +1433,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistGoals(updatedGoals);
 
-      if (userRef.current && updatedGoal) {
-        syncGoalToCloud(userRef.current.uid, updatedGoal).catch(() => {});
+      if (updatedGoal) {
+        syncToCloudNow((uid) => syncGoalToCloud(uid, updatedGoal!));
       }
 
       if (completed) {
@@ -1458,7 +1447,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: taskTitle ? `"${taskTitle}" updated.` : undefined,
       });
     },
-    [goals, persistGoals, showToast, triggerCelebration]
+    [goals, persistGoals, showToast, triggerCelebration, syncToCloudNow]
   );
 
   const toggleGoalMilestone = useCallback(
@@ -1471,8 +1460,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistGoals(updatedGoals);
 
-      if (userRef.current && updatedGoal) {
-        syncGoalToCloud(userRef.current.uid, updatedGoal).catch(() => {});
+      if (updatedGoal) {
+        syncToCloudNow((uid) => syncGoalToCloud(uid, updatedGoal!));
       }
 
       if (completed) {
@@ -1485,7 +1474,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: milestoneTitle ? `"${milestoneTitle}" updated.` : undefined,
       });
     },
-    [goals, persistGoals, showToast, triggerCelebration]
+    [goals, persistGoals, showToast, triggerCelebration, syncToCloudNow]
   );
 
   const toggleGoalChapter = useCallback(
@@ -1498,8 +1487,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistGoals(updatedGoals);
 
-      if (userRef.current && updatedGoal) {
-        syncGoalToCloud(userRef.current.uid, updatedGoal).catch(() => {});
+      if (updatedGoal) {
+        syncToCloudNow((uid) => syncGoalToCloud(uid, updatedGoal!));
       }
 
       if (completed) {
@@ -1512,7 +1501,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: chapterTitle ? `"${chapterTitle}" progress recorded.` : undefined,
       });
     },
-    [goals, persistGoals, showToast, triggerCelebration]
+    [goals, persistGoals, showToast, triggerCelebration, syncToCloudNow]
   );
 
   const updateGoalChapterDays = useCallback(
@@ -1523,8 +1512,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistGoals(updatedGoals);
 
-      if (userRef.current && updatedGoal) {
-        syncGoalToCloud(userRef.current.uid, updatedGoal).catch(() => {});
+      if (updatedGoal) {
+        syncToCloudNow((uid) => syncGoalToCloud(uid, updatedGoal!));
       }
 
       showToast({
@@ -1533,7 +1522,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: `Chapter schedule updated to ${days} days.`,
       });
     },
-    [goals, persistGoals, showToast]
+    [goals, persistGoals, showToast, syncToCloudNow]
   );
 
   const toggleGoalChapterTask = useCallback(
@@ -1547,8 +1536,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       persistGoals(updatedGoals);
 
-      if (userRef.current && updatedGoal) {
-        syncGoalToCloud(userRef.current.uid, updatedGoal).catch(() => {});
+      if (updatedGoal) {
+        syncToCloudNow((uid) => syncGoalToCloud(uid, updatedGoal!));
       }
 
       if (completed) {
@@ -1561,7 +1550,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: taskTitle ? `"${taskTitle}" updated.` : undefined,
       });
     },
-    [goals, persistGoals, showToast, triggerCelebration]
+    [goals, persistGoals, showToast, triggerCelebration, syncToCloudNow]
   );
 
   const quickAddTarget = useCallback(
@@ -1802,9 +1791,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const updated = { ...settings, ...updates };
       persistSettings(updated);
 
-      if (userRef.current) {
-        syncSettingsToCloud(userRef.current.uid, updated);
-      }
+      syncToCloudNow((uid) => syncSettingsToCloud(uid, updated));
 
       showToast({
         type: 'info',
@@ -1812,7 +1799,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: 'Your preferences have been updated.',
       });
     },
-    [settings, showToast, persistSettings]
+    [settings, showToast, persistSettings, syncToCloudNow]
   );
 
   const resetDataToDefaults = useCallback(() => {

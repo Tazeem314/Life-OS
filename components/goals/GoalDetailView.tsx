@@ -4,6 +4,7 @@ import React, { useState, useMemo } from 'react';
 import {
   Goal,
   GoalStatus,
+  GoalPriority,
   ChapterItem,
   ChapterTask,
   Milestone,
@@ -15,6 +16,7 @@ import {
   calculatePlannedVsActual,
   GOAL_STATUS_META,
   PRIORITY_META,
+  BUILT_IN_CATEGORIES,
   detectGoalHealthRisks,
   calculateGoalProgress,
   generateChaptersPlan,
@@ -95,6 +97,36 @@ export function GoalDetailView({
 
   // Settings tab states
   const [editDeadline, setEditDeadline] = useState(goal.deadline || goal.targetDate || '');
+
+  // Edit Goal Details Modal
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editTitle, setEditTitle] = useState(goal.title);
+  const [editCategory, setEditCategory] = useState(goal.category || 'Study');
+  const [editCustomCategory, setEditCustomCategory] = useState('');
+  const [editPriority, setEditPriority] = useState<GoalPriority>(goal.priority || 'medium');
+  const [editDeadlineDate, setEditDeadlineDate] = useState(goal.deadline || goal.targetDate || '');
+  const [editWhy, setEditWhy] = useState(goal.why || '');
+  const [editDescription, setEditDescription] = useState(goal.description || '');
+
+  const handleSaveGoalDetails = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTitle.trim()) return;
+    const finalCategory =
+      editCategory === 'Custom' ? editCustomCategory.trim() || 'Custom' : editCategory;
+    const updated: Goal = {
+      ...goal,
+      title: editTitle.trim(),
+      category: finalCategory,
+      priority: editPriority,
+      deadline: editDeadlineDate || goal.deadline,
+      targetDate: editDeadlineDate || goal.targetDate,
+      why: editWhy.trim() || undefined,
+      description: editDescription.trim() || undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    onUpdateGoal(updated);
+    setIsEditModalOpen(false);
+  };
 
   // Live Planned vs Actual Analytics (Sections 7, 8, 20, 21)
   const analysis = useMemo(() => {
@@ -275,6 +307,13 @@ export function GoalDetailView({
         </button>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsEditModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl hover:bg-zinc-200 dark:hover:bg-zinc-700 transition cursor-pointer"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-zinc-500" />
+            <span>Edit Goal</span>
+          </button>
           <button
             onClick={() => onOpenAICopilot(goal)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950 border border-sky-200 dark:border-sky-800 rounded-xl hover:bg-sky-100 transition cursor-pointer"
@@ -1011,6 +1050,143 @@ export function GoalDetailView({
               <Trash2 className="w-4 h-4" />
               <span>Delete This Goal</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Goal Modal */}
+      {isEditModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl sm:rounded-3xl p-5 sm:p-6 shadow-2xl relative my-auto max-h-[90vh] overflow-y-auto no-scrollbar space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <div>
+                <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  Edit Goal Details
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Update title, category, priority, purpose, and deadline
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditModalOpen(false)}
+                className="p-1.5 rounded-xl text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveGoalDetails} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                  Goal Title *
+                </label>
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                    Category
+                  </label>
+                  <select
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    {BUILT_IN_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                  {editCategory === 'Custom' && (
+                    <input
+                      type="text"
+                      placeholder="Enter custom category"
+                      value={editCustomCategory}
+                      onChange={(e) => setEditCustomCategory(e.target.value)}
+                      className="mt-1.5 w-full px-3 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-xs"
+                    />
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                    Priority
+                  </label>
+                  <select
+                    value={editPriority}
+                    onChange={(e) => setEditPriority(e.target.value as GoalPriority)}
+                    className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value="low">Low Priority</option>
+                    <option value="medium">Medium Priority</option>
+                    <option value="high">High Priority</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                  Target Deadline
+                </label>
+                <input
+                  type="date"
+                  value={editDeadlineDate}
+                  onChange={(e) => setEditDeadlineDate(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                  Why this goal matters (Purpose)
+                </label>
+                <input
+                  type="text"
+                  value={editWhy}
+                  onChange={(e) => setEditWhy(e.target.value)}
+                  placeholder="e.g. Pass exam with distinction, Build financial freedom..."
+                  className="w-full px-3.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-300 mb-1">
+                  Description / Strategy Notes
+                </label>
+                <textarea
+                  rows={2}
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  placeholder="Additional strategy or focus notes..."
+                  className="w-full px-3.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-zinc-100 dark:border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 rounded-xl shadow-xs transition"
+                >
+                  Save & Sync Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

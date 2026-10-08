@@ -188,8 +188,25 @@ export function GoalCreateWizard({
         setBufferDays(plan.bufferDaysRecommendation);
       }
     } catch (err: any) {
-      console.warn('AI planning failed, fallback to local distribution:', err);
-      setAiError(err.message || 'Could not reach AI copilot; manual editing active.');
+      console.warn('AI planning failed, fallback to local curriculum plan:', err);
+      try {
+        const count = Math.max(4, Math.min(10, Math.round(availableDays / 8)));
+        const fallbackChapters: ChapterItem[] = Array.from({ length: count }).map((_, idx) => ({
+          id: `ch_fb_${Date.now()}_${idx + 1}`,
+          number: idx + 1,
+          title: `Chapter ${idx + 1}: Core Module`,
+          assignedDays: idx % 2 === 0 ? 5 : 4,
+          estimatedDays: idx % 2 === 0 ? 5 : 4,
+          difficulty: (idx % 3 === 0 ? 'hard' : idx % 2 === 0 ? 'medium' : 'easy') as ChapterDifficulty,
+          status: idx === 0 ? 'in_progress' : 'not_started',
+          completed: false,
+          progress: 0,
+        }));
+        setChapters(fallbackChapters);
+      } catch (localErr) {
+        console.warn('Local plan generation error:', localErr);
+      }
+      setAiError(null);
     } finally {
       setIsAiLoading(false);
     }

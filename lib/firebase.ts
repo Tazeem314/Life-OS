@@ -10,6 +10,10 @@ import {
 import {
   getFirestore,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  enableNetwork,
+  disableNetwork,
   collection,
   doc,
   setDoc,
@@ -29,17 +33,40 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Authentication
 export const auth = getAuth(app);
 
-// Use the isolated database specified in firebase-applet-config.json with ignoreUndefinedProperties
+// Use the isolated database specified in firebase-applet-config.json with ignoreUndefinedProperties and multi-tab persistent cache
 const targetDatabaseId = firebaseConfig.firestoreDatabaseId;
 export const db = (() => {
+  const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
+  const firestoreSettings = {
+    ignoreUndefinedProperties: true,
+    ...(isBrowser
+      ? {
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+        }
+      : {}),
+  };
+
   try {
     return targetDatabaseId
-      ? initializeFirestore(app, { ignoreUndefinedProperties: true }, targetDatabaseId)
-      : initializeFirestore(app, { ignoreUndefinedProperties: true });
+      ? initializeFirestore(app, firestoreSettings, targetDatabaseId)
+      : initializeFirestore(app, firestoreSettings);
   } catch {
     return targetDatabaseId ? getFirestore(app, targetDatabaseId) : getFirestore(app);
   }
 })();
+
+/**
+ * Re-enables Firestore network connection immediately (used on visibilitychange / online)
+ */
+export async function reconnectFirestore(): Promise<void> {
+  try {
+    await enableNetwork(db);
+  } catch (err) {
+    // If already enabled or not supported in current state, ignore silently
+  }
+}
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({

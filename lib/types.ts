@@ -35,6 +35,7 @@ export interface Todo {
   priority: Priority;
   dueTime?: string; // HH:MM
   notes?: string;
+  category?: string; // e.g. Work, Personal, Study, Health, Urgent
   completed: boolean;
   order: number;
   createdAt: string;

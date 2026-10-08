@@ -6,6 +6,8 @@ const TODOS_STORAGE_KEY = 'life_os_todos_v1';
 const GOALS_STORAGE_KEY = 'life_os_goals_v1';
 const SETTINGS_STORAGE_KEY = 'life_os_settings_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
+const CACHED_USER_KEY = 'life_os_cached_uid';
+const DELETED_IDS_KEY = 'life_os_deleted_ids_v1';
 
 export const DEMO_HABIT_IDS = new Set(['habit_1', 'habit_2', 'habit_3', 'habit_4']);
 export const DEMO_TODO_IDS = new Set(['todo_1', 'todo_2', 'todo_3', 'todo_prev_1']);
@@ -247,5 +249,57 @@ export const Storage = {
     } catch {
       return false;
     }
+  },
+
+  getCachedUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      return localStorage.getItem(CACHED_USER_KEY) || null;
+    } catch {
+      return null;
+    }
+  },
+
+  setCachedUserId(uid: string | null): void {
+    if (typeof window === 'undefined') return;
+    try {
+      if (uid) {
+        localStorage.setItem(CACHED_USER_KEY, uid);
+      } else {
+        localStorage.removeItem(CACHED_USER_KEY);
+      }
+    } catch {}
+  },
+
+  getDeletedIds(): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(DELETED_IDS_KEY);
+      if (!raw) return new Set();
+      const list: string[] = JSON.parse(raw);
+      return new Set(Array.isArray(list) ? list : []);
+    } catch {
+      return new Set();
+    }
+  },
+
+  markDeleted(id: string): void {
+    if (typeof window === 'undefined' || !id) return;
+    try {
+      const current = this.getDeletedIds();
+      current.add(id);
+      // Keep at most 200 recent deleted IDs to keep storage clean
+      const arr = Array.from(current).slice(-200);
+      localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(arr));
+    } catch {}
+  },
+
+  unmarkDeleted(id: string): void {
+    if (typeof window === 'undefined' || !id) return;
+    try {
+      const current = this.getDeletedIds();
+      current.delete(id);
+      localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(Array.from(current)));
+    } catch {}
   },
 };
