@@ -6,7 +6,6 @@ import {
   Moon,
   Sun,
   Plus,
-  Sliders,
   Sparkles,
   TrendingUp,
   Clock,
@@ -107,37 +106,7 @@ export function SleepView() {
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setIsSettingsModalOpen(true)}
-            className="p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 transition-colors shadow-2xs"
-            title="Sleep Targets & Settings"
-            aria-label="Sleep settings"
-          >
-            <Sliders className="w-4 h-4" />
-          </button>
-
-          {!activeSleepSession ? (
-            <button
-              onClick={() => {
-                startSleepSession();
-                setIsNightModeOpen(true);
-              }}
-              className="px-3.5 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100/80 dark:hover:bg-indigo-900/60 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs"
-            >
-              <Moon className="w-3.5 h-3.5" />
-              <span>Start Night Session</span>
-            </button>
-          ) : (
-            <button
-              onClick={() => setIsNightModeOpen(true)}
-              className="px-3.5 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md animate-pulse"
-            >
-              <Moon className="w-3.5 h-3.5" />
-              <span>Open Night Clock</span>
-            </button>
-          )}
-
+        <div className="flex items-center gap-2">
           <button
             onClick={handleOpenNewLog}
             className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-2xs active:scale-95"
@@ -209,7 +178,10 @@ export function SleepView() {
               : '--'}
           </div>
           <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
-            Target: <span className="font-mono font-medium text-zinc-700 dark:text-zinc-300">{sleepSettings.targetHours}h 00m</span>
+            Target:{' '}
+            <span className="font-mono font-medium text-zinc-700 dark:text-zinc-300">
+              {formatDurationHoursMinutes(Math.round((sleepSettings.targetHours || 8) * 60))}
+            </span>
           </div>
         </div>
 
@@ -290,6 +262,8 @@ export function SleepView() {
             logs={sleepLogs}
             settings={sleepSettings}
             analytics={sleepAnalytics}
+            onUpdateSettings={updateSleepSettings}
+            onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
           />
           {/* Quick AI Coach Preview at bottom of analytics */}
           <AISleepCoachCard

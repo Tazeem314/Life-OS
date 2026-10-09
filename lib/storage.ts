@@ -146,7 +146,15 @@ export const Storage = {
         this.saveSettings(INITIAL_SETTINGS);
         return INITIAL_SETTINGS;
       }
-      return { ...INITIAL_SETTINGS, ...JSON.parse(data) };
+      const parsed = JSON.parse(data);
+      return {
+        ...INITIAL_SETTINGS,
+        ...parsed,
+        sleepSettings: {
+          ...DEFAULT_SLEEP_SETTINGS,
+          ...(parsed?.sleepSettings || {}),
+        },
+      };
     } catch {
       return INITIAL_SETTINGS;
     }

@@ -594,8 +594,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           },
           onSettings: (cloudSettings) => {
             if (!cloudSettings) return;
-            setSettings(cloudSettings);
-            Storage.saveSettings(cloudSettings);
+            const currentLocalSettings = settingsRef.current || Storage.getSettings();
+            const mergedSettings: UserSettings = {
+              ...INITIAL_SETTINGS,
+              ...currentLocalSettings,
+              ...cloudSettings,
+              sleepSettings:
+                cloudSettings.sleepSettings ||
+                currentLocalSettings.sleepSettings ||
+                DEFAULT_SLEEP_SETTINGS,
+            };
+            setSettings(mergedSettings);
+            Storage.saveSettings(mergedSettings);
             setLastSyncedAt(new Date());
           },
         });
@@ -2018,19 +2028,20 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const updateSleepSettings = useCallback(
     (newSettings: Partial<SleepSettings>) => {
+      const current = settingsRef.current || settings;
       const mergedSettings: SleepSettings = {
-        ...(settings.sleepSettings || DEFAULT_SLEEP_SETTINGS),
+        ...(current.sleepSettings || DEFAULT_SLEEP_SETTINGS),
         ...newSettings,
       };
-      const updatedUser = {
-        ...settings,
+      const updatedUser: UserSettings = {
+        ...current,
         sleepSettings: mergedSettings,
       };
       persistSettings(updatedUser);
       syncToCloudNow((uid) => syncSettingsToCloud(uid, updatedUser));
       showToast({
         type: 'success',
-        title: 'Sleep Preferences Saved',
+        title: 'Sleep Target Saved',
         message: `Target set to ${mergedSettings.targetHours}h per night.`,
       });
     },

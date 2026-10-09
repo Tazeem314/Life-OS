@@ -203,7 +203,7 @@ export function calculateSleepAnalytics(
   // Sort logs by date ascending
   const sorted = [...logs].sort((a, b) => a.date.localeCompare(b.date));
   const total = sorted.length;
-  const targetDurationMins = settings.targetHours * 60;
+  const targetDurationMins = (settings?.targetHours || 8) * 60;
 
   // Average duration & quality
   const totalDuration = sorted.reduce((sum, l) => sum + l.durationMinutes, 0);

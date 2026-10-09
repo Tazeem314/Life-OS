@@ -74,7 +74,17 @@
         "theme": { "type": "string" },
         "animationsEnabled": { "type": "boolean" },
         "reminderNotifications": { "type": "boolean" },
-        "userName": { "type": "string" }
+        "userName": { "type": "string" },
+        "sleepSettings": {
+          "type": "object",
+          "properties": {
+            "targetHours": { "type": "number" },
+            "targetBedtime": { "type": "string" },
+            "targetWakeTime": { "type": "string" },
+            "windDownReminder": { "type": "boolean" },
+            "windDownMinutesBefore": { "type": "number" }
+          }
+        }
       },
       "required": ["theme", "animationsEnabled", "reminderNotifications", "userName"]
     },
