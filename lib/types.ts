@@ -47,6 +47,7 @@ export interface UserSettings {
   animationsEnabled: boolean;
   reminderNotifications: boolean;
   userName: string;
+  sleepSettings?: SleepSettings;
 }
 
 export interface DayProgress {
@@ -78,7 +79,7 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'sleep' | 'calendar' | 'progress' | 'settings';
 
 export interface ToastMessage {
   id: string;
@@ -543,5 +544,90 @@ export interface AIReviewReport {
   recommendedPriorities: string[];
   actionableTips: string[];
 }
+
+// SLEEP TRACKER TYPES
+export type SleepQuality = 1 | 2 | 3 | 4 | 5; // 1 = Poor, 2 = Restless, 3 = Fair, 4 = Good, 5 = Optimal
+export type WakeMood = 'energized' | 'refreshed' | 'normal' | 'groggy' | 'exhausted';
+
+export interface SleepSettings {
+  targetHours: number; // e.g. 8 (standard 7-9h)
+  targetBedtime: string; // HH:MM e.g. "23:00"
+  targetWakeTime: string; // HH:MM e.g. "07:00"
+  windDownReminder: boolean;
+  windDownMinutesBefore: number; // e.g. 30
+}
+
+export interface SleepFactor {
+  id: string;
+  label: string;
+  category: 'positive' | 'negative' | 'neutral';
+  impactHint?: string;
+}
+
+export interface SleepLog {
+  id: string;
+  date: string; // YYYY-MM-DD for the morning of waking
+  bedtime: string; // e.g., "23:15"
+  wakeTime: string; // e.g., "07:30"
+  durationMinutes: number; // total sleep duration in minutes
+  qualityRating: SleepQuality; // 1 to 5
+  wakeMood?: WakeMood;
+  awakeningsCount?: number; // times woken up during night
+  timeToFallAsleepMinutes?: number; // latency e.g. 15m
+  deepSleepMinutes?: number;
+  remSleepMinutes?: number;
+  lightSleepMinutes?: number;
+  efficiencyScore?: number; // 0 - 100 percentage
+  factors?: string[]; // e.g. ['reading', 'caffeine_late', 'cold_room']
+  notes?: string;
+  isNap?: boolean;
+  source?: 'manual' | 'timer' | 'quick';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActiveSleepSession {
+  startTime: string; // ISO string
+  notes?: string;
+  targetWakeTime?: string; // HH:MM
+}
+
+export interface SleepAnalyticsSummary {
+  totalLogs: number;
+  avgDurationMinutes: number;
+  avgQuality: number;
+  targetAdherenceRate: number; // % of nights meeting target duration
+  currentStreakDays: number; // consecutive logged nights
+  bestStreakDays: number;
+  sleepDebtMinutes: number; // current 7-day deficit/surplus vs target
+  bedtimeConsistencyScore: number; // 0 - 100
+  wakeTimeConsistencyScore: number; // 0 - 100
+  overallEfficiencyScore: number; // 0 - 100
+  recentTrend: 'improving' | 'stable' | 'declining';
+  correlationWithHabits: {
+    wellRestedCompletionRate: number; // habit % on >= 7.5h days
+    underRestedCompletionRate: number; // habit % on < 7.5h days
+    boostPercentage: number;
+  };
+  factorImpacts: {
+    factorId: string;
+    factorLabel: string;
+    category: 'positive' | 'negative' | 'neutral';
+    count: number;
+    avgQualityWith: number;
+    qualityDelta: number; // relative to user overall avg
+  }[];
+}
+
+export interface AISleepInsight {
+  title: string;
+  summary: string;
+  circadianAdvice: string;
+  recommendedBedtime: string;
+  recommendedWakeTime: string;
+  habitSleepSynergy: string;
+  actionableTips: string[];
+}
+
 
 

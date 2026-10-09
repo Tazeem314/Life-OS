@@ -25,8 +25,10 @@ import {
   Check,
   ListPlus,
   Target,
+  Moon,
 } from 'lucide-react';
 import { getConnectedGoalHierarchy } from '@/lib/goal-service';
+import { formatDurationHoursMinutes, QUALITY_LABELS } from '@/lib/sleep-service';
 
 interface DashboardViewProps {
   onOpenNewHabit: () => void;
@@ -52,6 +54,9 @@ export function DashboardView({
     settings,
     todayProgress,
     overallStreaks,
+    sleepLogs,
+    sleepAnalytics,
+    activeSleepSession,
     toggleHabitCompletion,
     toggleTodoCompletion,
     convertHabitToTodo,
@@ -217,6 +222,54 @@ export function DashboardView({
           </div>
         </div>
       </div>
+
+      {/* Sleep & Circadian Rhythm Widget */}
+      {(() => {
+        const latestSleep = sleepLogs.length > 0 ? sleepLogs[0] : null;
+        return (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-indigo-50/80 via-white to-sky-50/60 dark:from-indigo-950/40 dark:via-zinc-900 dark:to-sky-950/30 border border-indigo-100 dark:border-indigo-900/60 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-100/80 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-200/60 dark:border-indigo-800/60">
+                <Moon className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                    Sleep & Recovery
+                  </h3>
+                  {activeSleepSession && (
+                    <span className="text-[10px] bg-indigo-500 text-white px-1.5 py-0.2 rounded-sm font-semibold animate-pulse">
+                      Recording Active
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  {latestSleep ? (
+                    <>
+                      Last night: <span className="font-semibold text-zinc-800 dark:text-zinc-200 font-mono">{formatDurationHoursMinutes(latestSleep.durationMinutes)}</span>
+                      {' · '}
+                      <span className={QUALITY_LABELS[latestSleep.qualityRating].color}>
+                        {QUALITY_LABELS[latestSleep.qualityRating].label} ({latestSleep.qualityRating}/5)
+                      </span>
+                      {sleepAnalytics.currentStreakDays > 0 && ` · ${sleepAnalytics.currentStreakDays}d streak`}
+                    </>
+                  ) : (
+                    'No sleep logged for last night yet. Tracking sleep optimizes executive focus.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setActiveTab('sleep')}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all self-start sm:self-auto shadow-2xs active:scale-95"
+            >
+              <span>View Sleep Tracker</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* 3. Main Split Section: Today's Habits & Today's To-Dos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">

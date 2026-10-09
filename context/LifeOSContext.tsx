@@ -24,7 +24,19 @@ import {
   DailyGoalContribution,
   AIPlanGeneratedResult,
   AIReplanGeneratedResult,
+  SleepLog,
+  ActiveSleepSession,
+  SleepSettings,
+  SleepAnalyticsSummary,
+  SleepQuality,
+  WakeMood,
 } from '@/lib/types';
+import {
+  calculateSleepAnalytics,
+  DEFAULT_SLEEP_SETTINGS,
+  calculateSleepDuration,
+  calculateSleepEfficiency,
+} from '@/lib/sleep-service';
 import {
   toggleTaskInGoal,
   toggleMilestoneInGoal,
@@ -148,6 +160,39 @@ const mergeRemoteGoals = (
   return { merged: Array.from(map.values()), newToUpload };
 };
 
+const mergeRemoteSleepLogs = (
+  local: SleepLog[],
+  remote: SleepLog[],
+  deletedIds: Set<string>
+): { merged: SleepLog[]; newToUpload: SleepLog[] } => {
+  const map = new Map<string, SleepLog>();
+  const newToUpload: SleepLog[] = [];
+
+  for (const s of remote || []) {
+    if (s && s.id && !deletedIds.has(s.id)) {
+      map.set(s.id, s);
+    }
+  }
+
+  for (const l of local || []) {
+    if (l && l.id && !deletedIds.has(l.id)) {
+      if (!map.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  const merged = Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+  return { merged, newToUpload };
+};
+
 const mergeRemoteCompletions = (
   local: HabitCompletion[],
   remote: HabitCompletion[],
@@ -228,6 +273,8 @@ import {
   deleteTodoFromCloud,
   syncGoalToCloud,
   deleteGoalFromCloud,
+  syncSleepLogToCloud,
+  deleteSleepLogFromCloud,
   syncSettingsToCloud,
   uploadInitialDataToCloud,
   checkHasCloudData,
@@ -304,6 +351,24 @@ interface LifeOSContextType {
   applyAIPlan: (plan: AIPlanGeneratedResult, createTasks?: boolean, createHabits?: boolean) => void;
   applyAIReplan: (goalId: string, replanResult: AIReplanGeneratedResult) => void;
 
+  // Sleep Operations & State
+  sleepLogs: SleepLog[];
+  activeSleepSession: ActiveSleepSession | null;
+  sleepSettings: SleepSettings;
+  sleepAnalytics: SleepAnalyticsSummary;
+  addSleepLog: (log: Omit<SleepLog, 'id' | 'createdAt' | 'updatedAt'>) => Promise<SleepLog>;
+  updateSleepLog: (id: string, updates: Partial<SleepLog>) => Promise<void>;
+  deleteSleepLog: (id: string) => Promise<void>;
+  startSleepSession: () => void;
+  stopSleepSessionAndLog: (
+    quality?: SleepQuality,
+    factors?: string[],
+    notes?: string,
+    mood?: WakeMood
+  ) => Promise<SleepLog | null>;
+  cancelSleepSession: () => void;
+  updateSleepSettings: (settings: Partial<SleepSettings>) => void;
+
   // Stats & Progress
   todayProgress: DayProgress;
   selectedDateProgress: DayProgress;
@@ -341,6 +406,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const [completions, setCompletions] = useState<HabitCompletion[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [sleepLogs, setSleepLogs] = useState<SleepLog[]>([]);
+  const [activeSleepSession, setActiveSleepSession] = useState<ActiveSleepSession | null>(null);
   const [settings, setSettings] = useState<UserSettings>(INITIAL_SETTINGS);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
@@ -350,6 +417,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const persistGoals = useCallback((newGoals: Goal[]) => {
     setGoals(newGoals);
     Storage.saveGoals(newGoals);
+  }, []);
+
+  const persistSleepLogs = useCallback((newLogs: SleepLog[]) => {
+    setSleepLogs(newLogs);
+    Storage.saveSleepLogs(newLogs);
   }, []);
 
   const dailyContributions = useMemo(() => {
@@ -364,12 +436,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const savedCompletions = Storage.getCompletions();
         const savedTodos = Storage.getTodos();
         const savedGoals = Storage.getGoals();
+        const savedSleepLogs = Storage.getSleepLogs();
+        const savedSession = Storage.getActiveSleepSession();
         const savedSettings = Storage.getSettings();
 
         setHabits(savedHabits);
         setCompletions(savedCompletions);
         setTodos(savedTodos);
         setGoals(savedGoals);
+        setSleepLogs(savedSleepLogs);
+        setActiveSleepSession(savedSession);
         setSettings(savedSettings);
       } catch (err) {
         console.warn('Failed to load local storage state:', err);
@@ -384,6 +460,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const completionsRef = useRef<HabitCompletion[]>(completions);
   const todosRef = useRef<Todo[]>(todos);
   const goalsRef = useRef<Goal[]>(goals);
+  const sleepLogsRef = useRef<SleepLog[]>(sleepLogs);
   const settingsRef = useRef<UserSettings>(settings);
 
   useEffect(() => { userRef.current = user; }, [user]);
@@ -391,6 +468,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { completionsRef.current = completions; }, [completions]);
   useEffect(() => { todosRef.current = todos; }, [todos]);
   useEffect(() => { goalsRef.current = goals; }, [goals]);
+  useEffect(() => { sleepLogsRef.current = sleepLogs; }, [sleepLogs]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // Lightweight heartbeat: ensures offline writes are flushed without locking the client
@@ -499,6 +577,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
             if (newToUpload.length > 0) {
               newToUpload.forEach((g) => syncGoalToCloud(currentUser.uid, g));
+            }
+          },
+          onSleepLogs: (cloudSleepLogs) => {
+            if (!cloudSleepLogs) return;
+            const deleted = Storage.getDeletedIds();
+            const currentLocal = sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs();
+            const { merged, newToUpload } = mergeRemoteSleepLogs(currentLocal, cloudSleepLogs, deleted);
+            setSleepLogs(merged);
+            Storage.saveSleepLogs(merged);
+            setLastSyncedAt(new Date());
+
+            if (newToUpload.length > 0) {
+              newToUpload.forEach((s) => syncSleepLogToCloud(currentUser.uid, s));
             }
           },
           onSettings: (cloudSettings) => {
@@ -664,6 +755,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
       const currentGoals = Storage.getGoals();
+      const currentSleepLogs = Storage.getSleepLogs();
       const currentSettings = Storage.getSettings();
 
       await flushPendingCloudWrites(userRef.current.uid);
@@ -674,7 +766,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         currentCompletions,
         currentTodos,
         currentSettings,
-        currentGoals
+        currentGoals,
+        currentSleepLogs
       );
 
       if (success) {
@@ -726,6 +819,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const currentCompletions = Storage.getCompletions();
       const currentTodos = Storage.getTodos();
       const currentGoals = Storage.getGoals();
+      const currentSleepLogs = Storage.getSleepLogs();
       const currentSettings = Storage.getSettings();
 
       await flushPendingCloudWrites(userRef.current.uid);
@@ -736,14 +830,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         currentCompletions,
         currentTodos,
         currentSettings,
-        currentGoals
+        currentGoals,
+        currentSleepLogs
       );
 
       if (success) {
         showToast({
           type: 'success',
           title: 'Cloud Sync Complete',
-          message: 'All your habits, to-dos, goals, and streaks are up to date in the cloud.',
+          message: 'All your habits, to-dos, goals, sleep logs, and streaks are up to date in the cloud.',
         });
       } else {
         showToast({
@@ -1763,6 +1858,194 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     [updateGoal, showToast]
   );
 
+  // SLEEP TRACKER OPERATIONS
+  const addSleepLog = useCallback(
+    async (logData: Omit<SleepLog, 'id' | 'createdAt' | 'updatedAt'>) => {
+      const id = `sleep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const durationMinutes =
+        logData.durationMinutes || calculateSleepDuration(logData.bedtime, logData.wakeTime);
+      const efficiencyScore =
+        logData.efficiencyScore ||
+        calculateSleepEfficiency(
+          durationMinutes,
+          logData.awakeningsCount,
+          logData.timeToFallAsleepMinutes
+        );
+      const deepSleepMinutes = logData.deepSleepMinutes || Math.round(durationMinutes * 0.22);
+      const remSleepMinutes = logData.remSleepMinutes || Math.round(durationMinutes * 0.23);
+      const lightSleepMinutes =
+        logData.lightSleepMinutes ||
+        Math.max(0, durationMinutes - deepSleepMinutes - remSleepMinutes);
+
+      const newLog: SleepLog = {
+        ...logData,
+        id,
+        durationMinutes,
+        efficiencyScore,
+        deepSleepMinutes,
+        remSleepMinutes,
+        lightSleepMinutes,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      Storage.unmarkDeleted(newLog.id);
+      const filtered = sleepLogs.filter((l) => l.id !== newLog.id && l.date !== newLog.date);
+      const updated = [newLog, ...filtered].sort((a, b) => b.date.localeCompare(a.date));
+      persistSleepLogs(updated);
+
+      syncToCloudNow((uid) => syncSleepLogToCloud(uid, newLog));
+
+      showToast({
+        type: 'success',
+        title: 'Sleep Logged',
+        message: `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m recorded for ${newLog.date}.`,
+      });
+      return newLog;
+    },
+    [sleepLogs, persistSleepLogs, syncToCloudNow, showToast]
+  );
+
+  const updateSleepLog = useCallback(
+    async (id: string, updates: Partial<SleepLog>) => {
+      const existing = sleepLogs.find((l) => l.id === id);
+      if (!existing) return;
+
+      const bedtime = updates.bedtime || existing.bedtime;
+      const wakeTime = updates.wakeTime || existing.wakeTime;
+      const durationMinutes = updates.durationMinutes || calculateSleepDuration(bedtime, wakeTime);
+
+      const updatedLog: SleepLog = {
+        ...existing,
+        ...updates,
+        durationMinutes,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updatedList = sleepLogs
+        .map((l) => (l.id === id ? updatedLog : l))
+        .sort((a, b) => b.date.localeCompare(a.date));
+      persistSleepLogs(updatedList);
+
+      syncToCloudNow((uid) => syncSleepLogToCloud(uid, updatedLog));
+
+      showToast({
+        type: 'info',
+        title: 'Sleep Record Updated',
+        message: `Sleep log for ${updatedLog.date} has been updated.`,
+      });
+    },
+    [sleepLogs, persistSleepLogs, syncToCloudNow, showToast]
+  );
+
+  const deleteSleepLog = useCallback(
+    async (id: string) => {
+      Storage.markDeleted(id);
+      const target = sleepLogs.find((l) => l.id === id);
+      const updated = sleepLogs.filter((l) => l.id !== id);
+      persistSleepLogs(updated);
+
+      syncToCloudNow((uid) => deleteSleepLogFromCloud(uid, id));
+
+      showToast({
+        type: 'info',
+        title: 'Sleep Log Deleted',
+        message: target ? `Sleep entry for ${target.date} removed.` : 'Sleep entry removed.',
+      });
+    },
+    [sleepLogs, persistSleepLogs, syncToCloudNow, showToast]
+  );
+
+  const startSleepSession = useCallback(() => {
+    const session: ActiveSleepSession = {
+      startTime: new Date().toISOString(),
+      targetWakeTime: settings.sleepSettings?.targetWakeTime || DEFAULT_SLEEP_SETTINGS.targetWakeTime,
+    };
+    setActiveSleepSession(session);
+    Storage.saveActiveSleepSession(session);
+    showToast({
+      type: 'info',
+      title: 'Sleep Session Started',
+      message: 'Ambient night mode active. Sleep well!',
+    });
+  }, [settings.sleepSettings, showToast]);
+
+  const stopSleepSessionAndLog = useCallback(
+    async (
+      quality: SleepQuality = 4,
+      factors: string[] = [],
+      notes = '',
+      mood: WakeMood = 'refreshed'
+    ): Promise<SleepLog | null> => {
+      if (!activeSleepSession) return null;
+      const now = new Date();
+      const startDate = new Date(activeSleepSession.startTime);
+      const durationMinutes = Math.max(10, Math.round((now.getTime() - startDate.getTime()) / 60000));
+
+      const bedHours = String(startDate.getHours()).padStart(2, '0');
+      const bedMins = String(startDate.getMinutes()).padStart(2, '0');
+      const wakeHours = String(now.getHours()).padStart(2, '0');
+      const wakeMins = String(now.getMinutes()).padStart(2, '0');
+
+      const dateKey = getTodayKey();
+      const newLog = await addSleepLog({
+        date: dateKey,
+        bedtime: `${bedHours}:${bedMins}`,
+        wakeTime: `${wakeHours}:${wakeMins}`,
+        durationMinutes,
+        qualityRating: quality,
+        wakeMood: mood,
+        factors,
+        notes: notes || activeSleepSession.notes,
+        source: 'timer',
+      });
+
+      setActiveSleepSession(null);
+      Storage.clearActiveSleepSession();
+      return newLog;
+    },
+    [activeSleepSession, addSleepLog]
+  );
+
+  const cancelSleepSession = useCallback(() => {
+    setActiveSleepSession(null);
+    Storage.clearActiveSleepSession();
+    showToast({
+      type: 'info',
+      title: 'Sleep Session Cancelled',
+    });
+  }, [showToast]);
+
+  const updateSleepSettings = useCallback(
+    (newSettings: Partial<SleepSettings>) => {
+      const mergedSettings: SleepSettings = {
+        ...(settings.sleepSettings || DEFAULT_SLEEP_SETTINGS),
+        ...newSettings,
+      };
+      const updatedUser = {
+        ...settings,
+        sleepSettings: mergedSettings,
+      };
+      persistSettings(updatedUser);
+      syncToCloudNow((uid) => syncSettingsToCloud(uid, updatedUser));
+      showToast({
+        type: 'success',
+        title: 'Sleep Preferences Saved',
+        message: `Target set to ${mergedSettings.targetHours}h per night.`,
+      });
+    },
+    [settings, persistSettings, syncToCloudNow, showToast]
+  );
+
+  const sleepAnalytics = useMemo(() => {
+    return calculateSleepAnalytics(
+      sleepLogs,
+      settings.sleepSettings || DEFAULT_SLEEP_SETTINGS,
+      completions,
+      habits
+    );
+  }, [sleepLogs, settings.sleepSettings, completions, habits]);
+
   // PROGRESS & STREAKS
   const getDayProgress = useCallback(
     (dateKey: string) => {
@@ -1804,11 +2087,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const resetDataToDefaults = useCallback(() => {
     const seed = Storage.resetToSeed();
+    const seedSleep = Storage.getSleepLogs();
     setHabits(seed.habits);
     setCompletions(seed.completions);
     setTodos(seed.todos);
     setSettings(seed.settings);
     setGoals([]);
+    setSleepLogs(seedSleep);
+    setActiveSleepSession(null);
     Storage.saveGoals([]);
     setSelectedDate(getTodayKey());
 
@@ -1819,7 +2105,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         seed.completions,
         seed.todos,
         seed.settings,
-        []
+        [],
+        seedSleep
       );
     }
 
@@ -1836,6 +2123,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setCompletions([]);
     setTodos([]);
     setGoals([]);
+    setSleepLogs([]);
+    setActiveSleepSession(null);
     setSettings(INITIAL_SETTINGS);
     setSelectedDate(getTodayKey());
 
@@ -1844,14 +2133,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       completions.forEach((c) => deleteCompletionFromCloud(userRef.current!.uid, c.id));
       todos.forEach((t) => deleteTodoFromCloud(userRef.current!.uid, t.id));
       goals.forEach((g) => deleteGoalFromCloud(userRef.current!.uid, g.id));
+      sleepLogs.forEach((s) => deleteSleepLogFromCloud(userRef.current!.uid, s.id));
     }
 
     showToast({
       type: 'warning',
       title: 'Data Cleared',
-      message: 'All habits, to-dos, and streaks have been cleared.',
+      message: 'All habits, to-dos, goals, and sleep records have been cleared.',
     });
-  }, [habits, completions, todos, goals, showToast]);
+  }, [habits, completions, todos, goals, sleepLogs, showToast]);
 
   const exportDataJson = useCallback(() => {
     return Storage.exportBackupJson();
@@ -1961,6 +2251,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     replanGoalSchedule,
     applyAIPlan,
     applyAIReplan,
+
+    sleepLogs,
+    activeSleepSession,
+    sleepSettings: settings.sleepSettings || DEFAULT_SLEEP_SETTINGS,
+    sleepAnalytics,
+    addSleepLog,
+    updateSleepLog,
+    deleteSleepLog,
+    startSleepSession,
+    stopSleepSessionAndLog,
+    cancelSleepSession,
+    updateSleepSettings,
 
     todayProgress,
     selectedDateProgress,

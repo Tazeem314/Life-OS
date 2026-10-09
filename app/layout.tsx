@@ -23,8 +23,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'Life OS — Habit & Daily To-Do Manager',
-  description: 'Modern Habit and Daily To-Do Manager for daily planning, progress, and streak tracking.',
+  title: 'Life OS — Habit, Goal & Sleep Manager',
+  description: 'Modern Habit, Daily To-Do, Goal Roadmap, and Sleep & Circadian Tracker for daily planning, progress, and streak tracking.',
   applicationName: 'LifeOS',
   appleWebApp: {
     capable: true,

@@ -13,7 +13,7 @@ import {
   where,
   User,
 } from './firebase';
-import { Habit, HabitCompletion, Todo, UserSettings, Goal } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog } from './types';
 
 export enum OperationType {
   CREATE = 'create',
@@ -75,6 +75,8 @@ export interface PendingWrite {
     | 'todo_delete'
     | 'goal'
     | 'goal_delete'
+    | 'sleep'
+    | 'sleep_delete'
     | 'settings';
   data?: any;
   id?: string;
@@ -149,6 +151,12 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
             break;
           case 'goal_delete':
             if (item.id) await deleteGoalFromCloud(userId, item.id, false);
+            break;
+          case 'sleep':
+            if (item.data) await syncSleepLogToCloud(userId, item.data, false);
+            break;
+          case 'sleep_delete':
+            if (item.id) await deleteSleepLogFromCloud(userId, item.id, false);
             break;
           case 'settings':
             if (item.data) await syncSettingsToCloud(userId, item.data, false);
@@ -341,6 +349,36 @@ export async function deleteGoalFromCloud(userId: string, goalId: string, should
   }
 }
 
+export async function syncSleepLogToCloud(userId: string, sleepLog: SleepLog, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'sleep', data: sleepLog, timestamp: Date.now() });
+  }
+  try {
+    const sleepRef = doc(db, 'users', userId, 'sleepLogs', sleepLog.id);
+    await setDoc(sleepRef, cleanForFirestore(sleepLog), { merge: true });
+    if (shouldQueue) {
+      removePendingWrite('sleep', sleepLog.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/sleepLogs/${sleepLog.id}`);
+  }
+}
+
+export async function deleteSleepLogFromCloud(userId: string, sleepLogId: string, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'sleep_delete', id: sleepLogId, timestamp: Date.now() });
+  }
+  try {
+    const sleepRef = doc(db, 'users', userId, 'sleepLogs', sleepLogId);
+    await deleteDoc(sleepRef);
+    if (shouldQueue) {
+      removePendingWrite('sleep_delete', sleepLogId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/sleepLogs/${sleepLogId}`);
+  }
+}
+
 export async function syncSettingsToCloud(userId: string, settings: UserSettings, shouldQueue = true): Promise<void> {
   if (shouldQueue) {
     queuePendingWrite({ type: 'settings', data: settings, timestamp: Date.now() });
@@ -362,7 +400,8 @@ export async function uploadInitialDataToCloud(
   completions: HabitCompletion[],
   todos: Todo[],
   settings: UserSettings,
-  goals: Goal[] = []
+  goals: Goal[] = [],
+  sleepLogs: SleepLog[] = []
 ): Promise<boolean> {
   try {
     const batch = writeBatch(db);
@@ -385,6 +424,11 @@ export async function uploadInitialDataToCloud(
     goals.forEach((g) => {
       const ref = doc(db, 'users', userId, 'goals', g.id);
       batch.set(ref, cleanForFirestore(g), { merge: true });
+    });
+
+    sleepLogs.forEach((s) => {
+      const ref = doc(db, 'users', userId, 'sleepLogs', s.id);
+      batch.set(ref, cleanForFirestore(s), { merge: true });
     });
 
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
@@ -399,7 +443,7 @@ export async function uploadInitialDataToCloud(
 }
 
 /**
- * Synchronize all local habits, completions, todos, goals, and settings to the cloud in batch.
+ * Synchronize all local habits, completions, todos, goals, sleep logs, and settings to the cloud in batch.
  * Used for automatic offline re-sync and manual cloud backup.
  */
 export async function syncAllLocalDataToCloud(
@@ -408,7 +452,8 @@ export async function syncAllLocalDataToCloud(
   completions: HabitCompletion[],
   todos: Todo[],
   settings: UserSettings,
-  goals: Goal[] = []
+  goals: Goal[] = [],
+  sleepLogs: SleepLog[] = []
 ): Promise<boolean> {
   try {
     const batch = writeBatch(db);
@@ -431,6 +476,11 @@ export async function syncAllLocalDataToCloud(
     goals.forEach((g) => {
       const ref = doc(db, 'users', userId, 'goals', g.id);
       batch.set(ref, cleanForFirestore(g), { merge: true });
+    });
+
+    sleepLogs.forEach((s) => {
+      const ref = doc(db, 'users', userId, 'sleepLogs', s.id);
+      batch.set(ref, cleanForFirestore(s), { merge: true });
     });
 
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
@@ -517,6 +567,7 @@ export function subscribeToUserCloudData(
     onCompletions: (completions: HabitCompletion[]) => void;
     onTodos: (todos: Todo[]) => void;
     onGoals?: (goals: Goal[]) => void;
+    onSleepLogs?: (sleepLogs: SleepLog[]) => void;
     onSettings: (settings: UserSettings) => void;
   }
 ): () => void {
@@ -599,6 +650,21 @@ export function subscribeToUserCloudData(
         handleListenerError(OperationType.LIST, `users/${userId}/goals`)
       );
       activeUnsubs.push(unsubGoals);
+
+      const unsubSleepLogs = onSnapshot(
+        collection(db, 'users', userId, 'sleepLogs'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: SleepLog[] = [];
+          snap.forEach((d) => list.push(d.data() as SleepLog));
+          list.sort((a, b) => b.date.localeCompare(a.date));
+          if (handlers.onSleepLogs) {
+            handlers.onSleepLogs(list);
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/sleepLogs`)
+      );
+      activeUnsubs.push(unsubSleepLogs);
 
       const unsubSettings = onSnapshot(
         doc(db, 'users', userId, 'settings', 'user_settings'),

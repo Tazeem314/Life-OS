@@ -1,10 +1,13 @@
-import { Habit, HabitCompletion, Todo, UserSettings, Goal } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, ActiveSleepSession } from './types';
+import { getInitialSeedSleepLogs, DEFAULT_SLEEP_SETTINGS } from './sleep-service';
 
 const HABITS_STORAGE_KEY = 'life_os_habits_v1';
 const COMPLETIONS_STORAGE_KEY = 'life_os_completions_v1';
 const TODOS_STORAGE_KEY = 'life_os_todos_v1';
 const GOALS_STORAGE_KEY = 'life_os_goals_v1';
 const SETTINGS_STORAGE_KEY = 'life_os_settings_v1';
+const SLEEP_LOGS_STORAGE_KEY = 'life_os_sleep_logs_v1';
+const ACTIVE_SLEEP_SESSION_KEY = 'life_os_active_sleep_session_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
 const CACHED_USER_KEY = 'life_os_cached_uid';
 const DELETED_IDS_KEY = 'life_os_deleted_ids_v1';
@@ -20,6 +23,7 @@ export const INITIAL_SETTINGS: UserSettings = {
   animationsEnabled: true,
   reminderNotifications: false,
   userName: 'Productive Achiever',
+  sleepSettings: DEFAULT_SLEEP_SETTINGS,
 };
 
 export function getInitialSeedData(): {
@@ -171,6 +175,60 @@ export const Storage = {
     }
   },
 
+  getSleepLogs(): SleepLog[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const data = localStorage.getItem(SLEEP_LOGS_STORAGE_KEY);
+      if (data === null) {
+        // Provide initial realistic sleep logs on first initialization
+        const seeds = getInitialSeedSleepLogs();
+        this.saveSleepLogs(seeds);
+        return seeds;
+      }
+      const parsed: SleepLog[] = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveSleepLogs(logs: SleepLog[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(SLEEP_LOGS_STORAGE_KEY, JSON.stringify(logs));
+      localStorage.setItem(INITIALIZED_KEY, 'true');
+    } catch (e) {
+      console.error('Failed to save sleep logs to localStorage', e);
+    }
+  },
+
+  getActiveSleepSession(): ActiveSleepSession | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const data = localStorage.getItem(ACTIVE_SLEEP_SESSION_KEY);
+      if (!data) return null;
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  },
+
+  saveActiveSleepSession(session: ActiveSleepSession): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(ACTIVE_SLEEP_SESSION_KEY, JSON.stringify(session));
+    } catch (e) {
+      console.error('Failed to save active sleep session', e);
+    }
+  },
+
+  clearActiveSleepSession(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
+    } catch {}
+  },
+
   saveSettings(settings: UserSettings): void {
     if (typeof window === 'undefined') return;
     try {
@@ -191,6 +249,8 @@ export const Storage = {
     localStorage.setItem(COMPLETIONS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(TODOS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.setItem(SLEEP_LOGS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(INITIAL_SETTINGS));
     localStorage.setItem(INITIALIZED_KEY, 'true');
   },
@@ -211,18 +271,21 @@ export const Storage = {
     settings: UserSettings;
   } {
     this.clearAllData();
+    const seedSleep = getInitialSeedSleepLogs();
+    this.saveSleepLogs(seedSleep);
     return getInitialSeedData();
   },
 
   exportBackupJson(): string {
     return JSON.stringify(
       {
-        version: '2.0',
+        version: '2.1',
         exportedAt: new Date().toISOString(),
         habits: this.getHabits(),
         completions: this.getCompletions(),
         todos: this.getTodos(),
         goals: this.getGoals(),
+        sleepLogs: this.getSleepLogs(),
         settings: this.getSettings(),
       },
       null,
@@ -239,6 +302,9 @@ export const Storage = {
         this.saveTodos(parsed.todos);
         if (Array.isArray(parsed.goals)) {
           this.saveGoals(parsed.goals);
+        }
+        if (Array.isArray(parsed.sleepLogs)) {
+          this.saveSleepLogs(parsed.sleepLogs);
         }
         if (parsed.settings) {
           this.saveSettings(parsed.settings);

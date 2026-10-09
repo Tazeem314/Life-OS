@@ -28,6 +28,10 @@ service cloud.firestore {
         allow read, write: if isOwner(userId);
       }
 
+      match /sleepLogs/{logId} {
+        allow read, write: if isOwner(userId);
+      }
+
       match /settings/{settingsId} {
         allow read, write: if isOwner(userId);
       }

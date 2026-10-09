@@ -9,6 +9,7 @@ import {
   Sparkles,
   CheckSquare,
   Target,
+  Moon,
   Calendar,
   TrendingUp,
   Settings,
@@ -23,7 +24,7 @@ interface NavItem {
 }
 
 export function Sidebar() {
-  const { activeTab, setActiveTab, todayProgress, habits, goals, user, loginWithGoogle, isOnline } = useLifeOS();
+  const { activeTab, setActiveTab, todayProgress, habits, goals, sleepAnalytics, user, loginWithGoogle, isOnline } = useLifeOS();
 
   const navItems: NavItem[] = [
     {
@@ -51,6 +52,12 @@ export function Sidebar() {
       label: 'Goals',
       icon: Target,
       badge: (goals || []).filter((g) => g.status !== 'completed' && g.status !== 'archived').length || undefined,
+    },
+    {
+      id: 'sleep',
+      label: 'Sleep Tracker',
+      icon: Moon,
+      badge: sleepAnalytics.currentStreakDays > 0 ? `${sleepAnalytics.currentStreakDays}d streak` : undefined,
     },
     {
       id: 'calendar',

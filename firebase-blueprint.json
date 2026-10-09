@@ -77,6 +77,27 @@
         "userName": { "type": "string" }
       },
       "required": ["theme", "animationsEnabled", "reminderNotifications", "userName"]
+    },
+    "SleepLog": {
+      "title": "SleepLog",
+      "description": "User sleep record for a night",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "bedtime": { "type": "string" },
+        "wakeTime": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "qualityRating": { "type": "number" },
+        "wakeMood": { "type": "string" },
+        "awakeningsCount": { "type": "number" },
+        "efficiencyScore": { "type": "number" },
+        "factors": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "date", "bedtime", "wakeTime", "durationMinutes", "qualityRating"]
     }
   },
   "firestore": {
@@ -95,6 +116,14 @@
     "/users/{userId}/todos/{todoId}": {
       "schema": "Todo",
       "description": "Todo tasks for the user"
+    },
+    "/users/{userId}/goals/{goalId}": {
+      "schema": "Goal",
+      "description": "Goals for the user"
+    },
+    "/users/{userId}/sleepLogs/{logId}": {
+      "schema": "SleepLog",
+      "description": "Sleep logs for the user"
     },
     "/users/{userId}/settings/{settingsId}": {
       "schema": "UserSettings",

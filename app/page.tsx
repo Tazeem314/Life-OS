@@ -12,6 +12,7 @@ import { TodoView } from '@/components/TodoView';
 import { CalendarView } from '@/components/CalendarView';
 import { ProgressView } from '@/components/ProgressView';
 import { SettingsView } from '@/components/SettingsView';
+import { SleepView } from '@/components/sleep/SleepView';
 import { HabitModal } from '@/components/modals/HabitModal';
 import { TodoModal } from '@/components/modals/TodoModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
@@ -290,6 +291,18 @@ function LifeOSAppContent() {
                     }}
                   />
                 )}
+              </motion.div>
+            )}
+
+            {activeTab === 'sleep' && (
+              <motion.div
+                key="sleep"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <SleepView />
               </motion.div>
             )}
 
