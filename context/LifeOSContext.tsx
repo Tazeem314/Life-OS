@@ -163,28 +163,78 @@ const mergeRemoteGoals = (
 const mergeRemoteSleepLogs = (
   local: SleepLog[],
   remote: SleepLog[],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  pendingSleepUploadIds: Set<string>
 ): { merged: SleepLog[]; newToUpload: SleepLog[] } => {
   const map = new Map<string, SleepLog>();
   const newToUpload: SleepLog[] = [];
+  const dateMap = new Map<string, SleepLog>();
 
+  // 1. Process remote logs first (canonical cloud source of truth)
   for (const s of remote || []) {
-    if (s && s.id && !deletedIds.has(s.id)) {
+    if (s && s.id) {
+      if (deletedIds.has(s.id)) {
+        // Was deleted locally on this device while offline; do not keep in merged
+        continue;
+      }
       map.set(s.id, s);
+      dateMap.set(s.date, s);
     }
   }
 
+  // 2. Reconcile local logs
   for (const l of local || []) {
-    if (l && l.id && !deletedIds.has(l.id)) {
-      if (!map.has(l.id)) {
+    if (!l || !l.id || deletedIds.has(l.id)) continue;
+
+    // Discard placeholder seed logs if real remote logs exist
+    const isSeed = l.id.startsWith('seed_sleep_');
+    if (isSeed && (remote || []).length > 0) {
+      continue;
+    }
+
+    if (map.has(l.id)) {
+      // Both exist: check if this device has pending offline edits
+      if (pendingSleepUploadIds.has(l.id)) {
         map.set(l.id, l);
+        dateMap.set(l.date, l);
         newToUpload.push(l);
       } else {
         const r = map.get(l.id)!;
-        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+        if (
+          l.updatedAt &&
+          r.updatedAt &&
+          new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime() &&
+          !isSeed
+        ) {
           map.set(l.id, l);
+          dateMap.set(l.date, l);
           newToUpload.push(l);
         }
+      }
+    } else {
+      // Local log not present in cloud
+      // Check if it was created on this device offline and waiting to upload
+      if (pendingSleepUploadIds.has(l.id)) {
+        const existingForDate = dateMap.get(l.date);
+        if (
+          !existingForDate ||
+          (l.updatedAt &&
+            existingForDate.updatedAt &&
+            new Date(l.updatedAt).getTime() > new Date(existingForDate.updatedAt).getTime())
+        ) {
+          map.set(l.id, l);
+          dateMap.set(l.date, l);
+          newToUpload.push(l);
+        }
+      } else if (!isSeed && (remote || []).length === 0) {
+        // First sync on a brand new empty cloud account
+        map.set(l.id, l);
+        dateMap.set(l.date, l);
+        newToUpload.push(l);
+      } else {
+        // Item was deleted in the cloud by another device (e.g. laptop)!
+        // Respect the deletion: do NOT re-upload, mark as deleted locally.
+        Storage.markDeleted(l.id);
       }
     }
   }
@@ -223,7 +273,8 @@ const purgeCloudDemoItems = async (
   userId: string,
   rawHabits: Habit[],
   rawCompletions: HabitCompletion[],
-  rawTodos: Todo[]
+  rawTodos: Todo[],
+  rawSleepLogs?: SleepLog[]
 ) => {
   if (!userId) return;
   for (const h of rawHabits || []) {
@@ -245,6 +296,17 @@ const purgeCloudDemoItems = async (
       try {
         await deleteTodoFromCloud(userId, t.id);
       } catch {}
+    }
+  }
+  // If user has real custom sleep logs, purge any stale seed sleep logs that were previously pushed
+  const hasRealSleep = (rawSleepLogs || []).some((s) => s && !s.id.startsWith('seed_sleep_'));
+  if (hasRealSleep) {
+    for (const s of rawSleepLogs || []) {
+      if (s && s.id.startsWith('seed_sleep_')) {
+        try {
+          await deleteSleepLogFromCloud(userId, s.id, false);
+        } catch {}
+      }
     }
   }
 };
@@ -282,6 +344,7 @@ import {
   syncAllLocalDataToCloud,
   fetchAllCloudData,
   flushPendingCloudWrites,
+  getPendingWriteIds,
 } from '@/lib/firestore-service';
 import firebaseConfig from '@/firebase-applet-config.json';
 
@@ -582,9 +645,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onSleepLogs: (cloudSleepLogs) => {
             if (!cloudSleepLogs) return;
             const deleted = Storage.getDeletedIds();
+            const pendingSleepIds = getPendingWriteIds('sleep');
             const currentLocal = sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs();
-            const { merged, newToUpload } = mergeRemoteSleepLogs(currentLocal, cloudSleepLogs, deleted);
+            const { merged, newToUpload } = mergeRemoteSleepLogs(
+              currentLocal,
+              cloudSleepLogs,
+              deleted,
+              pendingSleepIds
+            );
             setSleepLogs(merged);
+            sleepLogsRef.current = merged;
             Storage.saveSleepLogs(merged);
             setLastSyncedAt(new Date());
 
@@ -599,12 +669,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
               ...INITIAL_SETTINGS,
               ...currentLocalSettings,
               ...cloudSettings,
-              sleepSettings:
-                cloudSettings.sleepSettings ||
-                currentLocalSettings.sleepSettings ||
-                DEFAULT_SLEEP_SETTINGS,
+              sleepSettings: {
+                ...DEFAULT_SLEEP_SETTINGS,
+                ...(currentLocalSettings.sleepSettings || {}),
+                ...(cloudSettings.sleepSettings || {}),
+              },
             };
             setSettings(mergedSettings);
+            settingsRef.current = mergedSettings;
             Storage.saveSettings(mergedSettings);
             setLastSyncedAt(new Date());
           },
@@ -892,7 +964,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     try {
       const rawCloudData = await fetchAllCloudData(userRef.current.uid);
       if (rawCloudData) {
-        await purgeCloudDemoItems(userRef.current.uid, rawCloudData.habits, rawCloudData.completions, rawCloudData.todos);
+        await purgeCloudDemoItems(
+          userRef.current.uid,
+          rawCloudData.habits,
+          rawCloudData.completions,
+          rawCloudData.todos,
+          rawCloudData.sleepLogs
+        );
 
         const cleanHabits = filterCleanHabits(rawCloudData.habits);
         const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
@@ -913,14 +991,23 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           Storage.saveGoals(rawCloudData.goals);
         }
 
+        if (Array.isArray(rawCloudData.sleepLogs)) {
+          const cleanSleep = rawCloudData.sleepLogs.filter((s) => s && !s.id.startsWith('seed_sleep_'));
+          const logsToSet = cleanSleep.length > 0 ? cleanSleep : rawCloudData.sleepLogs;
+          setSleepLogs(logsToSet);
+          sleepLogsRef.current = logsToSet;
+          Storage.saveSleepLogs(logsToSet);
+        }
+
         if (rawCloudData.settings) {
           setSettings(rawCloudData.settings);
+          settingsRef.current = rawCloudData.settings;
           Storage.saveSettings(rawCloudData.settings);
         }
         showToast({
           type: 'success',
           title: 'Cloud Data Restored',
-          message: 'Successfully pulled and restored your latest habits, goals, and tasks from your Gmail account!',
+          message: 'Successfully pulled and restored your habits, goals, sleep records, and settings from your Gmail account!',
         });
       } else {
         showToast({
@@ -1920,6 +2007,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     async (id: string, updates: Partial<SleepLog>) => {
       const existing = sleepLogs.find((l) => l.id === id);
       if (!existing) return;
+
+      Storage.unmarkDeleted(id);
 
       const bedtime = updates.bedtime || existing.bedtime;
       const wakeTime = updates.wakeTime || existing.wakeTime;

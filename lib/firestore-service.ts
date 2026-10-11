@@ -113,6 +113,25 @@ export function removePendingWrite(type: string, id: string): void {
   } catch {}
 }
 
+export function getPendingWriteIds(type?: string): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    if (!raw) return new Set();
+    const queue: PendingWrite[] = JSON.parse(raw);
+    const ids = new Set<string>();
+    for (const item of queue) {
+      if (!type || item.type === type) {
+        const id = item.id || (item.data && item.data.id);
+        if (id) ids.add(id);
+      }
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
 let isFlushing = false;
 export async function flushPendingCloudWrites(userId: string): Promise<void> {
   if (typeof window === 'undefined' || !userId || isFlushing) return;
@@ -502,6 +521,7 @@ export async function fetchAllCloudData(userId: string): Promise<{
   completions: HabitCompletion[];
   todos: Todo[];
   goals: Goal[];
+  sleepLogs: SleepLog[];
   settings: UserSettings | null;
 } | null> {
   try {
@@ -522,10 +542,15 @@ export async function fetchAllCloudData(userId: string): Promise<{
     const goals: Goal[] = [];
     goalsSnap.forEach((d) => goals.push(d.data() as Goal));
 
+    const sleepSnap = await getDocs(collection(db, 'users', userId, 'sleepLogs'));
+    const sleepLogs: SleepLog[] = [];
+    sleepSnap.forEach((d) => sleepLogs.push(d.data() as SleepLog));
+    sleepLogs.sort((a, b) => b.date.localeCompare(a.date));
+
     const settingsSnap = await getDoc(doc(db, 'users', userId, 'settings', 'user_settings'));
     const settings = settingsSnap.exists() ? (settingsSnap.data() as UserSettings) : null;
 
-    return { habits, completions, todos, goals, settings };
+    return { habits, completions, todos, goals, sleepLogs, settings };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
     return null;
@@ -552,6 +577,10 @@ export async function checkHasCloudData(userId: string): Promise<boolean> {
     const compCol = collection(db, 'users', userId, 'habitCompletions');
     const compSnap = await getDocs(compCol);
     if (!compSnap.empty) return true;
+
+    const sleepCol = collection(db, 'users', userId, 'sleepLogs');
+    const sleepSnap = await getDocs(sleepCol);
+    if (!sleepSnap.empty) return true;
 
     return false;
   } catch (error) {
