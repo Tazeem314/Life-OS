@@ -66,7 +66,8 @@ const filterCleanTodos = (list: Todo[]) => (list || []).filter((t) => t && !DEMO
 const mergeRemoteHabits = (
   local: Habit[],
   remote: Habit[],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  pendingHabitUploadIds: Set<string> = new Set()
 ): { merged: Habit[]; newToUpload: Habit[] } => {
   const map = new Map<string, Habit>();
   const newToUpload: Habit[] = [];
@@ -78,8 +79,10 @@ const mergeRemoteHabits = (
   }
 
   for (const l of local || []) {
-    if (l && l.id && !deletedIds.has(l.id) && !DEMO_HABIT_IDS.has(l.id)) {
-      if (!map.has(l.id)) {
+    if (!l || !l.id || deletedIds.has(l.id) || DEMO_HABIT_IDS.has(l.id)) continue;
+
+    if (map.has(l.id)) {
+      if (pendingHabitUploadIds.has(l.id)) {
         map.set(l.id, l);
         newToUpload.push(l);
       } else {
@@ -88,6 +91,16 @@ const mergeRemoteHabits = (
           map.set(l.id, l);
           newToUpload.push(l);
         }
+      }
+    } else {
+      if (pendingHabitUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else if ((remote || []).length === 0) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        Storage.markDeleted(l.id);
       }
     }
   }
@@ -98,7 +111,8 @@ const mergeRemoteHabits = (
 const mergeRemoteTodos = (
   local: Todo[],
   remote: Todo[],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  pendingTodoUploadIds: Set<string> = new Set()
 ): { merged: Todo[]; newToUpload: Todo[] } => {
   const map = new Map<string, Todo>();
   const newToUpload: Todo[] = [];
@@ -110,8 +124,10 @@ const mergeRemoteTodos = (
   }
 
   for (const l of local || []) {
-    if (l && l.id && !deletedIds.has(l.id) && !DEMO_TODO_IDS.has(l.id)) {
-      if (!map.has(l.id)) {
+    if (!l || !l.id || deletedIds.has(l.id) || DEMO_TODO_IDS.has(l.id)) continue;
+
+    if (map.has(l.id)) {
+      if (pendingTodoUploadIds.has(l.id)) {
         map.set(l.id, l);
         newToUpload.push(l);
       } else {
@@ -120,6 +136,16 @@ const mergeRemoteTodos = (
           map.set(l.id, l);
           newToUpload.push(l);
         }
+      }
+    } else {
+      if (pendingTodoUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else if ((remote || []).length === 0) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        Storage.markDeleted(l.id);
       }
     }
   }
@@ -131,7 +157,8 @@ const mergeRemoteTodos = (
 const mergeRemoteGoals = (
   local: Goal[],
   remote: Goal[],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  pendingGoalUploadIds: Set<string> = new Set()
 ): { merged: Goal[]; newToUpload: Goal[] } => {
   const map = new Map<string, Goal>();
   const newToUpload: Goal[] = [];
@@ -143,8 +170,10 @@ const mergeRemoteGoals = (
   }
 
   for (const l of local || []) {
-    if (l && l.id && !deletedIds.has(l.id)) {
-      if (!map.has(l.id)) {
+    if (!l || !l.id || deletedIds.has(l.id)) continue;
+
+    if (map.has(l.id)) {
+      if (pendingGoalUploadIds.has(l.id)) {
         map.set(l.id, l);
         newToUpload.push(l);
       } else {
@@ -153,6 +182,16 @@ const mergeRemoteGoals = (
           map.set(l.id, l);
           newToUpload.push(l);
         }
+      }
+    } else {
+      if (pendingGoalUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else if ((remote || []).length === 0) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        Storage.markDeleted(l.id);
       }
     }
   }
@@ -164,17 +203,23 @@ const mergeRemoteSleepLogs = (
   local: SleepLog[],
   remote: SleepLog[],
   deletedIds: Set<string>,
-  pendingSleepUploadIds: Set<string>
+  pendingSleepUploadIds: Set<string> = new Set()
 ): { merged: SleepLog[]; newToUpload: SleepLog[] } => {
   const map = new Map<string, SleepLog>();
   const newToUpload: SleepLog[] = [];
   const dateMap = new Map<string, SleepLog>();
 
+  const hasRealSleepInRemote = (remote || []).some((s) => s && !s.id.startsWith('seed_sleep_'));
+  const hasRealSleepInLocal = (local || []).some((l) => l && !l.id.startsWith('seed_sleep_') && !deletedIds.has(l.id));
+  const shouldDiscardSeeds = hasRealSleepInRemote || hasRealSleepInLocal;
+
   // 1. Process remote logs first (canonical cloud source of truth)
   for (const s of remote || []) {
     if (s && s.id) {
       if (deletedIds.has(s.id)) {
-        // Was deleted locally on this device while offline; do not keep in merged
+        continue;
+      }
+      if (shouldDiscardSeeds && s.id.startsWith('seed_sleep_')) {
         continue;
       }
       map.set(s.id, s);
@@ -186,14 +231,11 @@ const mergeRemoteSleepLogs = (
   for (const l of local || []) {
     if (!l || !l.id || deletedIds.has(l.id)) continue;
 
-    // Discard placeholder seed logs if real remote logs exist
-    const isSeed = l.id.startsWith('seed_sleep_');
-    if (isSeed && (remote || []).length > 0) {
+    if (shouldDiscardSeeds && l.id.startsWith('seed_sleep_')) {
       continue;
     }
 
     if (map.has(l.id)) {
-      // Both exist: check if this device has pending offline edits
       if (pendingSleepUploadIds.has(l.id)) {
         map.set(l.id, l);
         dateMap.set(l.date, l);
@@ -203,8 +245,7 @@ const mergeRemoteSleepLogs = (
         if (
           l.updatedAt &&
           r.updatedAt &&
-          new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime() &&
-          !isSeed
+          new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()
         ) {
           map.set(l.id, l);
           dateMap.set(l.date, l);
@@ -212,8 +253,6 @@ const mergeRemoteSleepLogs = (
         }
       }
     } else {
-      // Local log not present in cloud
-      // Check if it was created on this device offline and waiting to upload
       if (pendingSleepUploadIds.has(l.id)) {
         const existingForDate = dateMap.get(l.date);
         if (
@@ -226,14 +265,11 @@ const mergeRemoteSleepLogs = (
           dateMap.set(l.date, l);
           newToUpload.push(l);
         }
-      } else if (!isSeed && (remote || []).length === 0) {
-        // First sync on a brand new empty cloud account
+      } else if (!l.id.startsWith('seed_sleep_') && (remote || []).length === 0) {
         map.set(l.id, l);
         dateMap.set(l.date, l);
         newToUpload.push(l);
       } else {
-        // Item was deleted in the cloud by another device (e.g. laptop)!
-        // Respect the deletion: do NOT re-upload, mark as deleted locally.
         Storage.markDeleted(l.id);
       }
     }
@@ -246,7 +282,8 @@ const mergeRemoteSleepLogs = (
 const mergeRemoteCompletions = (
   local: HabitCompletion[],
   remote: HabitCompletion[],
-  deletedIds: Set<string>
+  deletedIds: Set<string>,
+  pendingCompletionUploadIds: Set<string> = new Set()
 ): { merged: HabitCompletion[]; newToUpload: HabitCompletion[] } => {
   const map = new Map<string, HabitCompletion>();
   const newToUpload: HabitCompletion[] = [];
@@ -258,10 +295,22 @@ const mergeRemoteCompletions = (
   }
 
   for (const l of local || []) {
-    if (l && l.id && !deletedIds.has(l.id) && !DEMO_COMPLETION_IDS.has(l.id)) {
-      if (!map.has(l.id)) {
+    if (!l || !l.id || deletedIds.has(l.id) || DEMO_COMPLETION_IDS.has(l.id)) continue;
+
+    if (map.has(l.id)) {
+      if (pendingCompletionUploadIds.has(l.id)) {
         map.set(l.id, l);
         newToUpload.push(l);
+      }
+    } else {
+      if (pendingCompletionUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else if ((remote || []).length === 0) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        Storage.markDeleted(l.id);
       }
     }
   }
@@ -593,9 +642,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onHabits: (cloudHabits) => {
             if (!cloudHabits) return;
             const deleted = Storage.getDeletedIds();
+            const pendingHabits = getPendingWriteIds('habit');
             const currentLocal = habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits();
-            const { merged, newToUpload } = mergeRemoteHabits(currentLocal, cloudHabits, deleted);
+            const { merged, newToUpload } = mergeRemoteHabits(currentLocal, cloudHabits, deleted, pendingHabits);
             setHabits(merged);
+            habitsRef.current = merged;
             Storage.saveHabits(merged);
             setLastSyncedAt(new Date());
 
@@ -606,9 +657,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onCompletions: (cloudCompletions) => {
             if (!cloudCompletions) return;
             const deleted = Storage.getDeletedIds();
+            const pendingCompletions = getPendingWriteIds('completion');
             const currentLocal = completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions();
-            const { merged, newToUpload } = mergeRemoteCompletions(currentLocal, cloudCompletions, deleted);
+            const { merged, newToUpload } = mergeRemoteCompletions(currentLocal, cloudCompletions, deleted, pendingCompletions);
             setCompletions(merged);
+            completionsRef.current = merged;
             Storage.saveCompletions(merged);
             setLastSyncedAt(new Date());
 
@@ -619,9 +672,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onTodos: (cloudTodos) => {
             if (!cloudTodos) return;
             const deleted = Storage.getDeletedIds();
+            const pendingTodos = getPendingWriteIds('todo');
             const currentLocal = todosRef.current.length > 0 ? todosRef.current : Storage.getTodos();
-            const { merged, newToUpload } = mergeRemoteTodos(currentLocal, cloudTodos, deleted);
+            const { merged, newToUpload } = mergeRemoteTodos(currentLocal, cloudTodos, deleted, pendingTodos);
             setTodos(merged);
+            todosRef.current = merged;
             Storage.saveTodos(merged);
             setLastSyncedAt(new Date());
 
@@ -632,9 +687,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onGoals: (cloudGoals) => {
             if (!cloudGoals) return;
             const deleted = Storage.getDeletedIds();
+            const pendingGoals = getPendingWriteIds('goal');
             const currentLocal = goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals();
-            const { merged, newToUpload } = mergeRemoteGoals(currentLocal, cloudGoals, deleted);
+            const { merged, newToUpload } = mergeRemoteGoals(currentLocal, cloudGoals, deleted, pendingGoals);
             setGoals(merged);
+            goalsRef.current = merged;
             Storage.saveGoals(merged);
             setLastSyncedAt(new Date());
 
@@ -711,11 +768,72 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     } catch {}
 
     // Resilient lifecycle listeners: device unlock, mobile foreground, tab focus, network recovery
-    const handleForegroundWake = () => {
+    const handleForegroundWake = async () => {
       const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
-      if (uid) {
+      if (uid && navigator.onLine) {
         reconnectFirestore();
         flushPendingCloudWrites(uid).catch(() => {});
+        try {
+          const cloudData = await fetchAllCloudData(uid);
+          if (cloudData) {
+            const deleted = Storage.getDeletedIds();
+            const pendingSleep = getPendingWriteIds('sleep');
+            const pendingHabits = getPendingWriteIds('habit');
+            const pendingTodos = getPendingWriteIds('todo');
+            const pendingGoals = getPendingWriteIds('goal');
+            const pendingCompletions = getPendingWriteIds('completion');
+
+            if (cloudData.sleepLogs) {
+              const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, deleted, pendingSleep);
+              setSleepLogs(sleepMerge.merged);
+              sleepLogsRef.current = sleepMerge.merged;
+              Storage.saveSleepLogs(sleepMerge.merged);
+            }
+            if (cloudData.habits) {
+              const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, deleted, pendingHabits);
+              setHabits(habitsMerge.merged);
+              habitsRef.current = habitsMerge.merged;
+              Storage.saveHabits(habitsMerge.merged);
+            }
+            if (cloudData.todos) {
+              const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, deleted, pendingTodos);
+              setTodos(todosMerge.merged);
+              todosRef.current = todosMerge.merged;
+              Storage.saveTodos(todosMerge.merged);
+            }
+            if (cloudData.goals) {
+              const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, deleted, pendingGoals);
+              setGoals(goalsMerge.merged);
+              goalsRef.current = goalsMerge.merged;
+              Storage.saveGoals(goalsMerge.merged);
+            }
+            if (cloudData.completions) {
+              const compMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, deleted, pendingCompletions);
+              setCompletions(compMerge.merged);
+              completionsRef.current = compMerge.merged;
+              Storage.saveCompletions(compMerge.merged);
+            }
+            if (cloudData.settings) {
+              const currentLocalSettings = settingsRef.current || Storage.getSettings();
+              const mergedSettings: UserSettings = {
+                ...INITIAL_SETTINGS,
+                ...currentLocalSettings,
+                ...cloudData.settings,
+                sleepSettings: {
+                  ...DEFAULT_SLEEP_SETTINGS,
+                  ...(currentLocalSettings.sleepSettings || {}),
+                  ...(cloudData.settings.sleepSettings || {}),
+                },
+              };
+              setSettings(mergedSettings);
+              settingsRef.current = mergedSettings;
+              Storage.saveSettings(mergedSettings);
+            }
+            setLastSyncedAt(new Date());
+          }
+        } catch {
+          // ignore silent wake update error
+        }
       }
     };
 
@@ -761,11 +879,64 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const signedInUser = await signInWithGoogle();
       userRef.current = signedInUser;
       setUser(signedInUser);
+      Storage.setCachedUserId(signedInUser.uid);
       await saveUserProfile(signedInUser);
 
       // Trigger immediate network reconnect and flush
       reconnectFirestore();
       flushPendingCloudWrites(signedInUser.uid).catch(() => {});
+
+      // Instantly pull all cloud data to populate device immediately
+      try {
+        const rawCloudData = await fetchAllCloudData(signedInUser.uid);
+        if (rawCloudData) {
+          await purgeCloudDemoItems(
+            signedInUser.uid,
+            rawCloudData.habits,
+            rawCloudData.completions,
+            rawCloudData.todos,
+            rawCloudData.sleepLogs
+          );
+
+          if (rawCloudData.habits && rawCloudData.habits.length > 0) {
+            const cleanHabits = filterCleanHabits(rawCloudData.habits);
+            setHabits(cleanHabits);
+            habitsRef.current = cleanHabits;
+            Storage.saveHabits(cleanHabits);
+          }
+          if (rawCloudData.completions && rawCloudData.completions.length > 0) {
+            const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
+            setCompletions(cleanCompletions);
+            completionsRef.current = cleanCompletions;
+            Storage.saveCompletions(cleanCompletions);
+          }
+          if (rawCloudData.todos && rawCloudData.todos.length > 0) {
+            const cleanTodos = filterCleanTodos(rawCloudData.todos);
+            setTodos(cleanTodos);
+            todosRef.current = cleanTodos;
+            Storage.saveTodos(cleanTodos);
+          }
+          if (rawCloudData.goals && rawCloudData.goals.length > 0) {
+            setGoals(rawCloudData.goals);
+            goalsRef.current = rawCloudData.goals;
+            Storage.saveGoals(rawCloudData.goals);
+          }
+          if (rawCloudData.sleepLogs && rawCloudData.sleepLogs.length > 0) {
+            const cleanSleep = rawCloudData.sleepLogs.filter((s) => s && !s.id.startsWith('seed_sleep_'));
+            const logsToSet = cleanSleep.length > 0 ? cleanSleep : rawCloudData.sleepLogs;
+            setSleepLogs(logsToSet);
+            sleepLogsRef.current = logsToSet;
+            Storage.saveSleepLogs(logsToSet);
+          }
+          if (rawCloudData.settings) {
+            setSettings(rawCloudData.settings);
+            settingsRef.current = rawCloudData.settings;
+            Storage.saveSettings(rawCloudData.settings);
+          }
+        }
+      } catch (e) {
+        console.warn('Initial cloud pull on login error:', e);
+      }
 
       showToast({
         type: 'success',
@@ -878,11 +1049,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   // Manual trigger to force cloud sync
   const syncNow = useCallback(async () => {
-    if (!userRef.current) {
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
+    if (!uid) {
       showToast({
         type: 'info',
         title: 'Sign In Required',
-        message: 'Please sign in with Google to synchronize your habits and to-dos to the cloud.',
+        message: 'Please sign in with your Google account to synchronize across devices.',
       });
       return;
     }
@@ -897,49 +1069,119 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     setIsSyncing(true);
     try {
-      const currentHabits = Storage.getHabits();
-      const currentCompletions = Storage.getCompletions();
-      const currentTodos = Storage.getTodos();
-      const currentGoals = Storage.getGoals();
-      const currentSleepLogs = Storage.getSleepLogs();
-      const currentSettings = Storage.getSettings();
+      reconnectFirestore();
+      await flushPendingCloudWrites(uid);
 
-      await flushPendingCloudWrites(userRef.current.uid);
+      // 1. Fetch latest state from cloud
+      const cloudData = await fetchAllCloudData(uid);
+      if (cloudData) {
+        await purgeCloudDemoItems(
+          uid,
+          cloudData.habits,
+          cloudData.completions,
+          cloudData.todos,
+          cloudData.sleepLogs
+        );
 
-      const success = await syncAllLocalDataToCloud(
-        userRef.current.uid,
-        currentHabits,
-        currentCompletions,
-        currentTodos,
-        currentSettings,
-        currentGoals,
-        currentSleepLogs
-      );
+        const deleted = Storage.getDeletedIds();
+        const pendingHabits = getPendingWriteIds('habit');
+        const pendingTodos = getPendingWriteIds('todo');
+        const pendingGoals = getPendingWriteIds('goal');
+        const pendingSleep = getPendingWriteIds('sleep');
+        const pendingCompletions = getPendingWriteIds('completion');
 
-      if (success) {
-        showToast({
-          type: 'success',
-          title: 'Cloud Sync Complete',
-          message: 'All your habits, to-dos, goals, sleep logs, and streaks are up to date in the cloud.',
-        });
+        // Bidirectional merge
+        const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, deleted, pendingHabits);
+        setHabits(habitsMerge.merged);
+        habitsRef.current = habitsMerge.merged;
+        Storage.saveHabits(habitsMerge.merged);
+
+        const completionsMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, deleted, pendingCompletions);
+        setCompletions(completionsMerge.merged);
+        completionsRef.current = completionsMerge.merged;
+        Storage.saveCompletions(completionsMerge.merged);
+
+        const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, deleted, pendingTodos);
+        setTodos(todosMerge.merged);
+        todosRef.current = todosMerge.merged;
+        Storage.saveTodos(todosMerge.merged);
+
+        const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, deleted, pendingGoals);
+        setGoals(goalsMerge.merged);
+        goalsRef.current = goalsMerge.merged;
+        Storage.saveGoals(goalsMerge.merged);
+
+        const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, deleted, pendingSleep);
+        setSleepLogs(sleepMerge.merged);
+        sleepLogsRef.current = sleepMerge.merged;
+        Storage.saveSleepLogs(sleepMerge.merged);
+
+        if (cloudData.settings) {
+          const mergedSettings: UserSettings = {
+            ...INITIAL_SETTINGS,
+            ...settingsRef.current,
+            ...cloudData.settings,
+            sleepSettings: {
+              ...DEFAULT_SLEEP_SETTINGS,
+              ...(settingsRef.current.sleepSettings || {}),
+              ...(cloudData.settings.sleepSettings || {}),
+            },
+          };
+          setSettings(mergedSettings);
+          settingsRef.current = mergedSettings;
+          Storage.saveSettings(mergedSettings);
+        }
+
+        // Upload any items that were waiting to be uploaded
+        const newUploadOps = [
+          ...habitsMerge.newToUpload.map((h) => syncHabitToCloud(uid, h)),
+          ...completionsMerge.newToUpload.map((c) => syncCompletionToCloud(uid, c)),
+          ...todosMerge.newToUpload.map((t) => syncTodoToCloud(uid, t)),
+          ...goalsMerge.newToUpload.map((g) => syncGoalToCloud(uid, g)),
+          ...sleepMerge.newToUpload.map((s) => syncSleepLogToCloud(uid, s)),
+        ];
+        if (newUploadOps.length > 0) {
+          await Promise.allSettled(newUploadOps);
+        }
       } else {
-        showToast({
-          type: 'error',
-          title: 'Sync Incomplete',
-          message: 'Could not sync all items. Will retry automatically.',
-        });
+        // First-time cloud upload from local
+        const currentHabits = Storage.getHabits();
+        const currentCompletions = Storage.getCompletions();
+        const currentTodos = Storage.getTodos();
+        const currentGoals = Storage.getGoals();
+        const currentSleepLogs = Storage.getSleepLogs();
+        const currentSettings = Storage.getSettings();
+
+        await syncAllLocalDataToCloud(
+          uid,
+          currentHabits,
+          currentCompletions,
+          currentTodos,
+          currentSettings,
+          currentGoals,
+          currentSleepLogs
+        );
       }
+
+      setLastSyncedAt(new Date());
+      broadcastLocalChange();
+
+      showToast({
+        type: 'success',
+        title: 'Synced Across All Devices',
+        message: 'Your sleep records, habits, to-dos, goals, and settings are up to date with Google Cloud.',
+      });
     } catch (err) {
       console.error('Manual sync error:', err);
       showToast({
         type: 'error',
-        title: 'Sync Failed',
-        message: 'An error occurred during synchronization.',
+        title: 'Sync Error',
+        message: 'Could not connect to cloud server. Will retry automatically.',
       });
     } finally {
       setIsSyncing(false);
     }
-  }, [showToast]);
+  }, [showToast, broadcastLocalChange]);
 
   // Pull latest data from Gmail cloud
   const pullFromCloud = useCallback(async () => {

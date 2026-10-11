@@ -43,6 +43,9 @@ export function cleanForFirestore<T>(data: T): T {
   if (data === null || data === undefined) {
     return data;
   }
+  if (typeof data === 'number' && Number.isNaN(data)) {
+    return null as unknown as T;
+  }
   if (data instanceof Date) {
     return data.toISOString() as unknown as T;
   }
@@ -467,49 +470,97 @@ export async function uploadInitialDataToCloud(
  */
 export async function syncAllLocalDataToCloud(
   userId: string,
-  habits: Habit[],
-  completions: HabitCompletion[],
-  todos: Todo[],
+  habits: Habit[] = [],
+  completions: HabitCompletion[] = [],
+  todos: Todo[] = [],
   settings: UserSettings,
   goals: Goal[] = [],
   sleepLogs: SleepLog[] = []
 ): Promise<boolean> {
+  if (!userId) return false;
   try {
-    const batch = writeBatch(db);
+    const validHabits = (habits || []).filter(
+      (h) => h && typeof h.id === 'string' && h.id.trim() !== ''
+    );
+    const validCompletions = (completions || []).filter(
+      (c) => c && typeof c.id === 'string' && c.id.trim() !== ''
+    );
+    const validTodos = (todos || []).filter(
+      (t) => t && typeof t.id === 'string' && t.id.trim() !== ''
+    );
+    const validGoals = (goals || []).filter(
+      (g) => g && typeof g.id === 'string' && g.id.trim() !== ''
+    );
+    const validSleepLogs = (sleepLogs || []).filter(
+      (s) => s && typeof s.id === 'string' && s.id.trim() !== ''
+    );
 
-    habits.forEach((h) => {
-      const ref = doc(db, 'users', userId, 'habits', h.id);
-      batch.set(ref, cleanForFirestore(h), { merge: true });
+    const ops: Array<{ ref: any; data: any }> = [];
+
+    validHabits.forEach((h) => {
+      ops.push({
+        ref: doc(db, 'users', userId, 'habits', h.id),
+        data: cleanForFirestore(h),
+      });
     });
 
-    completions.forEach((c) => {
-      const ref = doc(db, 'users', userId, 'habitCompletions', c.id);
-      batch.set(ref, cleanForFirestore(c), { merge: true });
+    validCompletions.forEach((c) => {
+      ops.push({
+        ref: doc(db, 'users', userId, 'habitCompletions', c.id),
+        data: cleanForFirestore(c),
+      });
     });
 
-    todos.forEach((t) => {
-      const ref = doc(db, 'users', userId, 'todos', t.id);
-      batch.set(ref, cleanForFirestore(t), { merge: true });
+    validTodos.forEach((t) => {
+      ops.push({
+        ref: doc(db, 'users', userId, 'todos', t.id),
+        data: cleanForFirestore(t),
+      });
     });
 
-    goals.forEach((g) => {
-      const ref = doc(db, 'users', userId, 'goals', g.id);
-      batch.set(ref, cleanForFirestore(g), { merge: true });
+    validGoals.forEach((g) => {
+      ops.push({
+        ref: doc(db, 'users', userId, 'goals', g.id),
+        data: cleanForFirestore(g),
+      });
     });
 
-    sleepLogs.forEach((s) => {
-      const ref = doc(db, 'users', userId, 'sleepLogs', s.id);
-      batch.set(ref, cleanForFirestore(s), { merge: true });
+    validSleepLogs.forEach((s) => {
+      ops.push({
+        ref: doc(db, 'users', userId, 'sleepLogs', s.id),
+        data: cleanForFirestore(s),
+      });
     });
 
-    const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
-    batch.set(settingsRef, cleanForFirestore(settings), { merge: true });
+    if (settings) {
+      ops.push({
+        ref: doc(db, 'users', userId, 'settings', 'user_settings'),
+        data: cleanForFirestore(settings),
+      });
+    }
 
-    await batch.commit();
+    // Execute in batches of 250 (Firestore limit is 500)
+    const BATCH_SIZE = 250;
+    for (let i = 0; i < ops.length; i += BATCH_SIZE) {
+      const chunk = ops.slice(i, i + BATCH_SIZE);
+      const batch = writeBatch(db);
+      for (const op of chunk) {
+        batch.set(op.ref, op.data, { merge: true });
+      }
+      await batch.commit();
+    }
+
     return true;
   } catch (error) {
     console.error('Error in syncAllLocalDataToCloud:', error);
-    return false;
+    try {
+      if (settings) {
+        await setDoc(doc(db, 'users', userId, 'settings', 'user_settings'), cleanForFirestore(settings), { merge: true });
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
