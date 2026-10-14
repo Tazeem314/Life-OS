@@ -233,6 +233,22 @@ export async function saveUserProfile(user: User): Promise<void> {
   }
 }
 
+export async function recordCloudDeletion(userId: string, id: string, type: string): Promise<void> {
+  if (!userId || !id) return;
+  try {
+    const delRef = doc(db, 'users', userId, 'deletions', id);
+    await setDoc(delRef, { id, type, deletedAt: new Date().toISOString() }, { merge: true });
+  } catch {}
+}
+
+export async function clearCloudDeletion(userId: string, id: string): Promise<void> {
+  if (!userId || !id) return;
+  try {
+    const delRef = doc(db, 'users', userId, 'deletions', id);
+    await deleteDoc(delRef);
+  } catch {}
+}
+
 export async function syncHabitToCloud(userId: string, habit: Habit, shouldQueue = true): Promise<void> {
   if (shouldQueue) {
     queuePendingWrite({ type: 'habit', data: habit, timestamp: Date.now() });
@@ -240,6 +256,7 @@ export async function syncHabitToCloud(userId: string, habit: Habit, shouldQueue
   try {
     const habitRef = doc(db, 'users', userId, 'habits', habit.id);
     await setDoc(habitRef, cleanForFirestore(habit), { merge: true });
+    clearCloudDeletion(userId, habit.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('habit', habit.id);
     }
@@ -255,6 +272,7 @@ export async function deleteHabitFromCloud(userId: string, habitId: string, shou
   try {
     const habitRef = doc(db, 'users', userId, 'habits', habitId);
     await deleteDoc(habitRef);
+    await recordCloudDeletion(userId, habitId, 'habit');
     if (shouldQueue) {
       removePendingWrite('habit_delete', habitId);
     }
@@ -288,6 +306,7 @@ export async function syncCompletionToCloud(userId: string, completion: HabitCom
   try {
     const compRef = doc(db, 'users', userId, 'habitCompletions', completion.id);
     await setDoc(compRef, cleanForFirestore(completion), { merge: true });
+    clearCloudDeletion(userId, completion.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('completion', completion.id);
     }
@@ -303,6 +322,7 @@ export async function deleteCompletionFromCloud(userId: string, completionId: st
   try {
     const compRef = doc(db, 'users', userId, 'habitCompletions', completionId);
     await deleteDoc(compRef);
+    await recordCloudDeletion(userId, completionId, 'completion');
     if (shouldQueue) {
       removePendingWrite('completion_delete', completionId);
     }
@@ -318,6 +338,7 @@ export async function syncTodoToCloud(userId: string, todo: Todo, shouldQueue = 
   try {
     const todoRef = doc(db, 'users', userId, 'todos', todo.id);
     await setDoc(todoRef, cleanForFirestore(todo), { merge: true });
+    clearCloudDeletion(userId, todo.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('todo', todo.id);
     }
@@ -333,6 +354,7 @@ export async function deleteTodoFromCloud(userId: string, todoId: string, should
   try {
     const todoRef = doc(db, 'users', userId, 'todos', todoId);
     await deleteDoc(todoRef);
+    await recordCloudDeletion(userId, todoId, 'todo');
     if (shouldQueue) {
       removePendingWrite('todo_delete', todoId);
     }
@@ -348,6 +370,7 @@ export async function syncGoalToCloud(userId: string, goal: Goal, shouldQueue = 
   try {
     const goalRef = doc(db, 'users', userId, 'goals', goal.id);
     await setDoc(goalRef, cleanForFirestore(goal), { merge: true });
+    clearCloudDeletion(userId, goal.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('goal', goal.id);
     }
@@ -363,6 +386,7 @@ export async function deleteGoalFromCloud(userId: string, goalId: string, should
   try {
     const goalRef = doc(db, 'users', userId, 'goals', goalId);
     await deleteDoc(goalRef);
+    await recordCloudDeletion(userId, goalId, 'goal');
     if (shouldQueue) {
       removePendingWrite('goal_delete', goalId);
     }
@@ -378,6 +402,7 @@ export async function syncSleepLogToCloud(userId: string, sleepLog: SleepLog, sh
   try {
     const sleepRef = doc(db, 'users', userId, 'sleepLogs', sleepLog.id);
     await setDoc(sleepRef, cleanForFirestore(sleepLog), { merge: true });
+    clearCloudDeletion(userId, sleepLog.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('sleep', sleepLog.id);
     }
@@ -393,6 +418,7 @@ export async function deleteSleepLogFromCloud(userId: string, sleepLogId: string
   try {
     const sleepRef = doc(db, 'users', userId, 'sleepLogs', sleepLogId);
     await deleteDoc(sleepRef);
+    await recordCloudDeletion(userId, sleepLogId, 'sleep');
     if (shouldQueue) {
       removePendingWrite('sleep_delete', sleepLogId);
     }
@@ -539,15 +565,22 @@ export async function syncAllLocalDataToCloud(
       });
     }
 
-    // Execute in batches of 250 (Firestore limit is 500)
-    const BATCH_SIZE = 250;
+    // Execute in batches of 100 with resilient per-doc fallback
+    const BATCH_SIZE = 100;
     for (let i = 0; i < ops.length; i += BATCH_SIZE) {
       const chunk = ops.slice(i, i + BATCH_SIZE);
-      const batch = writeBatch(db);
-      for (const op of chunk) {
-        batch.set(op.ref, op.data, { merge: true });
+      try {
+        const batch = writeBatch(db);
+        for (const op of chunk) {
+          batch.set(op.ref, op.data, { merge: true });
+        }
+        await batch.commit();
+      } catch (batchErr) {
+        console.warn('Batch write encountered error, falling back to individual writes:', batchErr);
+        await Promise.allSettled(
+          chunk.map((op) => setDoc(op.ref, op.data, { merge: true }))
+        );
       }
-      await batch.commit();
     }
 
     return true;
@@ -564,44 +597,78 @@ export async function syncAllLocalDataToCloud(
   }
 }
 
-/**
- * Fetch all cloud data for a user from Firestore.
- */
-export async function fetchAllCloudData(userId: string): Promise<{
-  habits: Habit[];
-  completions: HabitCompletion[];
-  todos: Todo[];
-  goals: Goal[];
-  sleepLogs: SleepLog[];
+export interface CloudSnapshotMeta {
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+}
+
+export interface CloudDataResult {
+  habits: Habit[] | null;
+  completions: HabitCompletion[] | null;
+  todos: Todo[] | null;
+  goals: Goal[] | null;
+  sleepLogs: SleepLog[] | null;
   settings: UserSettings | null;
-} | null> {
+  deletions: Map<string, string>;
+}
+
+/**
+ * Fetch all cloud data for a user from Firestore concurrently.
+ */
+export async function fetchAllCloudData(userId: string): Promise<CloudDataResult | null> {
+  if (!userId) return null;
   try {
-    const habitsSnap = await getDocs(collection(db, 'users', userId, 'habits'));
-    const habits: Habit[] = [];
-    habitsSnap.forEach((d) => habits.push(d.data() as Habit));
+    const [habitsRes, compRes, todosRes, goalsRes, sleepRes, settingsRes, delRes] = await Promise.allSettled([
+      getDocs(collection(db, 'users', userId, 'habits')),
+      getDocs(collection(db, 'users', userId, 'habitCompletions')),
+      getDocs(collection(db, 'users', userId, 'todos')),
+      getDocs(collection(db, 'users', userId, 'goals')),
+      getDocs(collection(db, 'users', userId, 'sleepLogs')),
+      getDoc(doc(db, 'users', userId, 'settings', 'user_settings')),
+      getDocs(collection(db, 'users', userId, 'deletions')),
+    ]);
 
-    const compSnap = await getDocs(collection(db, 'users', userId, 'habitCompletions'));
-    const completions: HabitCompletion[] = [];
-    compSnap.forEach((d) => completions.push(d.data() as HabitCompletion));
+    const habits: Habit[] | null =
+      habitsRes.status === 'fulfilled'
+        ? habitsRes.value.docs.map((d) => d.data() as Habit)
+        : null;
 
-    const todosSnap = await getDocs(collection(db, 'users', userId, 'todos'));
-    const todos: Todo[] = [];
-    todosSnap.forEach((d) => todos.push(d.data() as Todo));
-    todos.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const completions: HabitCompletion[] | null =
+      compRes.status === 'fulfilled'
+        ? compRes.value.docs.map((d) => d.data() as HabitCompletion)
+        : null;
 
-    const goalsSnap = await getDocs(collection(db, 'users', userId, 'goals'));
-    const goals: Goal[] = [];
-    goalsSnap.forEach((d) => goals.push(d.data() as Goal));
+    const todos: Todo[] | null =
+      todosRes.status === 'fulfilled'
+        ? todosRes.value.docs.map((d) => d.data() as Todo).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        : null;
 
-    const sleepSnap = await getDocs(collection(db, 'users', userId, 'sleepLogs'));
-    const sleepLogs: SleepLog[] = [];
-    sleepSnap.forEach((d) => sleepLogs.push(d.data() as SleepLog));
-    sleepLogs.sort((a, b) => b.date.localeCompare(a.date));
+    const goals: Goal[] | null =
+      goalsRes.status === 'fulfilled'
+        ? goalsRes.value.docs.map((d) => d.data() as Goal)
+        : null;
 
-    const settingsSnap = await getDoc(doc(db, 'users', userId, 'settings', 'user_settings'));
-    const settings = settingsSnap.exists() ? (settingsSnap.data() as UserSettings) : null;
+    const sleepLogs: SleepLog[] | null =
+      sleepRes.status === 'fulfilled'
+        ? sleepRes.value.docs.map((d) => d.data() as SleepLog).sort((a, b) => b.date.localeCompare(a.date))
+        : null;
 
-    return { habits, completions, todos, goals, sleepLogs, settings };
+    let settings: UserSettings | null = null;
+    if (settingsRes.status === 'fulfilled' && settingsRes.value.exists()) {
+      settings = settingsRes.value.data() as UserSettings;
+    }
+
+    const deletions = new Map<string, string>();
+    if (delRes.status === 'fulfilled') {
+      delRes.value.forEach((d) => {
+        const data = d.data();
+        if (data && data.id && data.deletedAt) {
+          deletions.set(data.id, data.deletedAt);
+        }
+      });
+    }
+
+    return { habits, completions, todos, goals, sleepLogs, settings, deletions };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
     return null;
@@ -643,12 +710,13 @@ export async function checkHasCloudData(userId: string): Promise<boolean> {
 export function subscribeToUserCloudData(
   userId: string,
   handlers: {
-    onHabits: (habits: Habit[]) => void;
-    onCompletions: (completions: HabitCompletion[]) => void;
-    onTodos: (todos: Todo[]) => void;
-    onGoals?: (goals: Goal[]) => void;
-    onSleepLogs?: (sleepLogs: SleepLog[]) => void;
-    onSettings: (settings: UserSettings) => void;
+    onHabits: (habits: Habit[], meta?: CloudSnapshotMeta) => void;
+    onCompletions: (completions: HabitCompletion[], meta?: CloudSnapshotMeta) => void;
+    onTodos: (todos: Todo[], meta?: CloudSnapshotMeta) => void;
+    onGoals?: (goals: Goal[], meta?: CloudSnapshotMeta) => void;
+    onSleepLogs?: (sleepLogs: SleepLog[], meta?: CloudSnapshotMeta) => void;
+    onSettings: (settings: UserSettings, meta?: CloudSnapshotMeta) => void;
+    onDeletions?: (deletions: Map<string, string>) => void;
   }
 ): () => void {
   let isUnsubscribed = false;
@@ -686,7 +754,10 @@ export function subscribeToUserCloudData(
           if (isUnsubscribed) return;
           const list: Habit[] = [];
           snap.forEach((d) => list.push(d.data() as Habit));
-          handlers.onHabits(list);
+          handlers.onHabits(list, {
+            fromCache: snap.metadata.fromCache,
+            hasPendingWrites: snap.metadata.hasPendingWrites,
+          });
         },
         handleListenerError(OperationType.LIST, `users/${userId}/habits`)
       );
@@ -698,7 +769,10 @@ export function subscribeToUserCloudData(
           if (isUnsubscribed) return;
           const list: HabitCompletion[] = [];
           snap.forEach((d) => list.push(d.data() as HabitCompletion));
-          handlers.onCompletions(list);
+          handlers.onCompletions(list, {
+            fromCache: snap.metadata.fromCache,
+            hasPendingWrites: snap.metadata.hasPendingWrites,
+          });
         },
         handleListenerError(OperationType.LIST, `users/${userId}/habitCompletions`)
       );
@@ -711,7 +785,10 @@ export function subscribeToUserCloudData(
           const list: Todo[] = [];
           snap.forEach((d) => list.push(d.data() as Todo));
           list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-          handlers.onTodos(list);
+          handlers.onTodos(list, {
+            fromCache: snap.metadata.fromCache,
+            hasPendingWrites: snap.metadata.hasPendingWrites,
+          });
         },
         handleListenerError(OperationType.LIST, `users/${userId}/todos`)
       );
@@ -724,7 +801,10 @@ export function subscribeToUserCloudData(
           const list: Goal[] = [];
           snap.forEach((d) => list.push(d.data() as Goal));
           if (handlers.onGoals) {
-            handlers.onGoals(list);
+            handlers.onGoals(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.LIST, `users/${userId}/goals`)
@@ -739,7 +819,10 @@ export function subscribeToUserCloudData(
           snap.forEach((d) => list.push(d.data() as SleepLog));
           list.sort((a, b) => b.date.localeCompare(a.date));
           if (handlers.onSleepLogs) {
-            handlers.onSleepLogs(list);
+            handlers.onSleepLogs(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.LIST, `users/${userId}/sleepLogs`)
@@ -751,12 +834,34 @@ export function subscribeToUserCloudData(
         (snap) => {
           if (isUnsubscribed) return;
           if (snap.exists()) {
-            handlers.onSettings(snap.data() as UserSettings);
+            handlers.onSettings(snap.data() as UserSettings, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.GET, `users/${userId}/settings/user_settings`)
       );
       activeUnsubs.push(unsubSettings);
+
+      const unsubDeletions = onSnapshot(
+        collection(db, 'users', userId, 'deletions'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const map = new Map<string, string>();
+          snap.forEach((d) => {
+            const data = d.data();
+            if (data && data.id && data.deletedAt) {
+              map.set(data.id, data.deletedAt);
+            }
+          });
+          if (handlers.onDeletions) {
+            handlers.onDeletions(map);
+          }
+        },
+        () => {}
+      );
+      activeUnsubs.push(unsubDeletions);
     } catch (err) {
       console.warn('Failed to attach firestore listeners:', err);
       if (!retryTimer) {

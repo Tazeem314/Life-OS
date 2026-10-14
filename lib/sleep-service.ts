@@ -163,8 +163,8 @@ export function getInitialSeedSleepLogs(): SleepLog[] {
       factors: cfg.factors,
       notes: idx === 2 ? 'Deep night after evening walk & reading.' : undefined,
       source: 'quick',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
     };
   });
 }

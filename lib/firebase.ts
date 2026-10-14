@@ -12,6 +12,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   enableNetwork,
   disableNetwork,
   collection,
@@ -33,25 +34,57 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Authentication
 export const auth = getAuth(app);
 
-// Use the isolated database specified in firebase-applet-config.json with ignoreUndefinedProperties and multi-tab persistent cache
+// Use the isolated database specified in firebase-applet-config.json with resilient caching and ignoreUndefinedProperties
 const targetDatabaseId = firebaseConfig.firestoreDatabaseId;
 export const db = (() => {
   const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
-  const firestoreSettings = {
-    ignoreUndefinedProperties: true,
-    ...(isBrowser
-      ? {
-          localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager(),
-          }),
-        }
-      : {}),
-  };
 
+  if (isBrowser) {
+    // 1. Attempt multi-tab persistent cache
+    try {
+      const multiTabSettings = {
+        ignoreUndefinedProperties: true,
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      };
+      return targetDatabaseId
+        ? initializeFirestore(app, multiTabSettings, targetDatabaseId)
+        : initializeFirestore(app, multiTabSettings);
+    } catch {
+      // 2. Attempt single-tab persistent cache (common for mobile Safari WebViews)
+      try {
+        const singleTabSettings = {
+          ignoreUndefinedProperties: true,
+          localCache: persistentLocalCache({}),
+        };
+        return targetDatabaseId
+          ? initializeFirestore(app, singleTabSettings, targetDatabaseId)
+          : initializeFirestore(app, singleTabSettings);
+      } catch {
+        // 3. Fallback to memory cache with ignoreUndefinedProperties
+        try {
+          const memorySettings = {
+            ignoreUndefinedProperties: true,
+            localCache: memoryLocalCache(),
+          };
+          return targetDatabaseId
+            ? initializeFirestore(app, memorySettings, targetDatabaseId)
+            : initializeFirestore(app, memorySettings);
+        } catch {
+          // Final fallback
+          return targetDatabaseId ? getFirestore(app, targetDatabaseId) : getFirestore(app);
+        }
+      }
+    }
+  }
+
+  // Server-side fallback
   try {
+    const srvSettings = { ignoreUndefinedProperties: true };
     return targetDatabaseId
-      ? initializeFirestore(app, firestoreSettings, targetDatabaseId)
-      : initializeFirestore(app, firestoreSettings);
+      ? initializeFirestore(app, srvSettings, targetDatabaseId)
+      : initializeFirestore(app, srvSettings);
   } catch {
     return targetDatabaseId ? getFirestore(app, targetDatabaseId) : getFirestore(app);
   }

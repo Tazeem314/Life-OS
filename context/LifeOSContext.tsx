@@ -66,20 +66,24 @@ const filterCleanTodos = (list: Todo[]) => (list || []).filter((t) => t && !DEMO
 const mergeRemoteHabits = (
   local: Habit[],
   remote: Habit[],
-  deletedIds: Set<string>,
-  pendingHabitUploadIds: Set<string> = new Set()
+  syncedIds: Set<string>,
+  pendingHabitUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
 ): { merged: Habit[]; newToUpload: Habit[] } => {
   const map = new Map<string, Habit>();
   const newToUpload: Habit[] = [];
 
+  // 1. Remote is the canonical cloud state
   for (const h of remote || []) {
-    if (h && h.id && !deletedIds.has(h.id) && !DEMO_HABIT_IDS.has(h.id)) {
+    if (h && h.id && !DEMO_HABIT_IDS.has(h.id)) {
       map.set(h.id, h);
     }
   }
 
+  // 2. Reconcile local
   for (const l of local || []) {
-    if (!l || !l.id || deletedIds.has(l.id) || DEMO_HABIT_IDS.has(l.id)) continue;
+    if (!l || !l.id || DEMO_HABIT_IDS.has(l.id)) continue;
 
     if (map.has(l.id)) {
       if (pendingHabitUploadIds.has(l.id)) {
@@ -93,14 +97,33 @@ const mergeRemoteHabits = (
         }
       }
     } else {
-      if (pendingHabitUploadIds.has(l.id)) {
+      if (!isAuthoritative) {
+        // Cache snapshot or incomplete query: preserve local record
         map.set(l.id, l);
-        newToUpload.push(l);
-      } else if ((remote || []).length === 0) {
-        map.set(l.id, l);
-        newToUpload.push(l);
+        if (!syncedIds.has(l.id) || pendingHabitUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
       } else {
-        Storage.markDeleted(l.id);
+        // Authoritative server state
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingHabitUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite('habit', l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
       }
     }
   }
@@ -111,20 +134,24 @@ const mergeRemoteHabits = (
 const mergeRemoteTodos = (
   local: Todo[],
   remote: Todo[],
-  deletedIds: Set<string>,
-  pendingTodoUploadIds: Set<string> = new Set()
+  syncedIds: Set<string>,
+  pendingTodoUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
 ): { merged: Todo[]; newToUpload: Todo[] } => {
   const map = new Map<string, Todo>();
   const newToUpload: Todo[] = [];
 
+  // 1. Canonical cloud state
   for (const t of remote || []) {
-    if (t && t.id && !deletedIds.has(t.id) && !DEMO_TODO_IDS.has(t.id)) {
+    if (t && t.id && !DEMO_TODO_IDS.has(t.id)) {
       map.set(t.id, t);
     }
   }
 
+  // 2. Reconcile local
   for (const l of local || []) {
-    if (!l || !l.id || deletedIds.has(l.id) || DEMO_TODO_IDS.has(l.id)) continue;
+    if (!l || !l.id || DEMO_TODO_IDS.has(l.id)) continue;
 
     if (map.has(l.id)) {
       if (pendingTodoUploadIds.has(l.id)) {
@@ -138,14 +165,31 @@ const mergeRemoteTodos = (
         }
       }
     } else {
-      if (pendingTodoUploadIds.has(l.id)) {
+      if (!isAuthoritative) {
         map.set(l.id, l);
-        newToUpload.push(l);
-      } else if ((remote || []).length === 0) {
-        map.set(l.id, l);
-        newToUpload.push(l);
+        if (!syncedIds.has(l.id) || pendingTodoUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
       } else {
-        Storage.markDeleted(l.id);
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingTodoUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite('todo', l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
       }
     }
   }
@@ -157,20 +201,22 @@ const mergeRemoteTodos = (
 const mergeRemoteGoals = (
   local: Goal[],
   remote: Goal[],
-  deletedIds: Set<string>,
-  pendingGoalUploadIds: Set<string> = new Set()
+  syncedIds: Set<string>,
+  pendingGoalUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
 ): { merged: Goal[]; newToUpload: Goal[] } => {
   const map = new Map<string, Goal>();
   const newToUpload: Goal[] = [];
 
   for (const g of remote || []) {
-    if (g && g.id && !deletedIds.has(g.id)) {
+    if (g && g.id) {
       map.set(g.id, g);
     }
   }
 
   for (const l of local || []) {
-    if (!l || !l.id || deletedIds.has(l.id)) continue;
+    if (!l || !l.id) continue;
 
     if (map.has(l.id)) {
       if (pendingGoalUploadIds.has(l.id)) {
@@ -184,14 +230,31 @@ const mergeRemoteGoals = (
         }
       }
     } else {
-      if (pendingGoalUploadIds.has(l.id)) {
+      if (!isAuthoritative) {
         map.set(l.id, l);
-        newToUpload.push(l);
-      } else if ((remote || []).length === 0) {
-        map.set(l.id, l);
-        newToUpload.push(l);
+        if (!syncedIds.has(l.id) || pendingGoalUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
       } else {
-        Storage.markDeleted(l.id);
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingGoalUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite('goal', l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
       }
     }
   }
@@ -202,23 +265,22 @@ const mergeRemoteGoals = (
 const mergeRemoteSleepLogs = (
   local: SleepLog[],
   remote: SleepLog[],
-  deletedIds: Set<string>,
-  pendingSleepUploadIds: Set<string> = new Set()
+  syncedIds: Set<string>,
+  pendingSleepUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
 ): { merged: SleepLog[]; newToUpload: SleepLog[] } => {
   const map = new Map<string, SleepLog>();
   const newToUpload: SleepLog[] = [];
   const dateMap = new Map<string, SleepLog>();
 
   const hasRealSleepInRemote = (remote || []).some((s) => s && !s.id.startsWith('seed_sleep_'));
-  const hasRealSleepInLocal = (local || []).some((l) => l && !l.id.startsWith('seed_sleep_') && !deletedIds.has(l.id));
+  const hasRealSleepInLocal = (local || []).some((l) => l && !l.id.startsWith('seed_sleep_'));
   const shouldDiscardSeeds = hasRealSleepInRemote || hasRealSleepInLocal;
 
-  // 1. Process remote logs first (canonical cloud source of truth)
+  // 1. Canonical cloud source of truth
   for (const s of remote || []) {
     if (s && s.id) {
-      if (deletedIds.has(s.id)) {
-        continue;
-      }
       if (shouldDiscardSeeds && s.id.startsWith('seed_sleep_')) {
         continue;
       }
@@ -229,7 +291,7 @@ const mergeRemoteSleepLogs = (
 
   // 2. Reconcile local logs
   for (const l of local || []) {
-    if (!l || !l.id || deletedIds.has(l.id)) continue;
+    if (!l || !l.id) continue;
 
     if (shouldDiscardSeeds && l.id.startsWith('seed_sleep_')) {
       continue;
@@ -253,24 +315,53 @@ const mergeRemoteSleepLogs = (
         }
       }
     } else {
-      if (pendingSleepUploadIds.has(l.id)) {
-        const existingForDate = dateMap.get(l.date);
+      const existingForDate = dateMap.get(l.date);
+      if (existingForDate) {
+        const isLocalSeed = l.id.startsWith('seed_sleep_');
         if (
-          !existingForDate ||
-          (l.updatedAt &&
-            existingForDate.updatedAt &&
-            new Date(l.updatedAt).getTime() > new Date(existingForDate.updatedAt).getTime())
+          !isLocalSeed &&
+          (pendingSleepUploadIds.has(l.id) ||
+            (l.updatedAt &&
+              existingForDate.updatedAt &&
+              new Date(l.updatedAt).getTime() > new Date(existingForDate.updatedAt).getTime()))
         ) {
+          map.delete(existingForDate.id);
           map.set(l.id, l);
           dateMap.set(l.date, l);
           newToUpload.push(l);
         }
-      } else if (!l.id.startsWith('seed_sleep_') && (remote || []).length === 0) {
-        map.set(l.id, l);
-        dateMap.set(l.date, l);
-        newToUpload.push(l);
       } else {
-        Storage.markDeleted(l.id);
+        if (!isAuthoritative) {
+          if (!l.id.startsWith('seed_sleep_')) {
+            map.set(l.id, l);
+            dateMap.set(l.date, l);
+            if (!syncedIds.has(l.id) || pendingSleepUploadIds.has(l.id)) {
+              newToUpload.push(l);
+            }
+          }
+        } else {
+          const wasSyncedBefore = syncedIds.has(l.id);
+          const isPendingUpload = pendingSleepUploadIds.has(l.id);
+
+          if (deletions.has(l.id)) {
+            const deletedAt = deletions.get(l.id)!;
+            const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+            const remoteDeleted = new Date(deletedAt).getTime();
+
+            if (remoteDeleted >= localUpdated) {
+              removePendingWrite('sleep', l.id);
+              Storage.unmarkSynced(l.id);
+            } else {
+              map.set(l.id, l);
+              dateMap.set(l.date, l);
+              newToUpload.push(l);
+            }
+          } else if (!l.id.startsWith('seed_sleep_') && (!wasSyncedBefore || isPendingUpload)) {
+            map.set(l.id, l);
+            dateMap.set(l.date, l);
+            newToUpload.push(l);
+          }
+        }
       }
     }
   }
@@ -282,20 +373,22 @@ const mergeRemoteSleepLogs = (
 const mergeRemoteCompletions = (
   local: HabitCompletion[],
   remote: HabitCompletion[],
-  deletedIds: Set<string>,
-  pendingCompletionUploadIds: Set<string> = new Set()
+  syncedIds: Set<string>,
+  pendingCompletionUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
 ): { merged: HabitCompletion[]; newToUpload: HabitCompletion[] } => {
   const map = new Map<string, HabitCompletion>();
   const newToUpload: HabitCompletion[] = [];
 
   for (const c of remote || []) {
-    if (c && c.id && !deletedIds.has(c.id) && !DEMO_COMPLETION_IDS.has(c.id)) {
+    if (c && c.id && !DEMO_COMPLETION_IDS.has(c.id)) {
       map.set(c.id, c);
     }
   }
 
   for (const l of local || []) {
-    if (!l || !l.id || deletedIds.has(l.id) || DEMO_COMPLETION_IDS.has(l.id)) continue;
+    if (!l || !l.id || DEMO_COMPLETION_IDS.has(l.id)) continue;
 
     if (map.has(l.id)) {
       if (pendingCompletionUploadIds.has(l.id)) {
@@ -303,14 +396,22 @@ const mergeRemoteCompletions = (
         newToUpload.push(l);
       }
     } else {
-      if (pendingCompletionUploadIds.has(l.id)) {
+      if (!isAuthoritative) {
         map.set(l.id, l);
-        newToUpload.push(l);
-      } else if ((remote || []).length === 0) {
-        map.set(l.id, l);
-        newToUpload.push(l);
+        if (!syncedIds.has(l.id) || pendingCompletionUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
       } else {
-        Storage.markDeleted(l.id);
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingCompletionUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          removePendingWrite('completion', l.id);
+          Storage.unmarkSynced(l.id);
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
       }
     }
   }
@@ -394,6 +495,7 @@ import {
   fetchAllCloudData,
   flushPendingCloudWrites,
   getPendingWriteIds,
+  removePendingWrite,
 } from '@/lib/firestore-service';
 import firebaseConfig from '@/firebase-applet-config.json';
 
@@ -574,6 +676,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const goalsRef = useRef<Goal[]>(goals);
   const sleepLogsRef = useRef<SleepLog[]>(sleepLogs);
   const settingsRef = useRef<UserSettings>(settings);
+  const isWakingRef = useRef<boolean>(false);
+  const deletionsRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => { userRef.current = user; }, [user]);
   useEffect(() => { habitsRef.current = habits; }, [habits]);
@@ -632,6 +736,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       if (currentUser) {
         Storage.setCachedUserId(currentUser.uid);
+        Storage.clearDeletedIds();
 
         // 1. Immediately subscribe to real-time updates from Firestore with non-destructive merge
         if (unsubscribeFirestore) {
@@ -639,80 +744,133 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         }
 
         unsubscribeFirestore = subscribeToUserCloudData(currentUser.uid, {
-          onHabits: (cloudHabits) => {
+          onDeletions: (map) => {
+            deletionsRef.current = map;
+          },
+          onHabits: (cloudHabits, meta) => {
             if (!cloudHabits) return;
-            const deleted = Storage.getDeletedIds();
+            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingHabits = getPendingWriteIds('habit');
             const currentLocal = habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits();
-            const { merged, newToUpload } = mergeRemoteHabits(currentLocal, cloudHabits, deleted, pendingHabits);
+            const { merged, newToUpload } = mergeRemoteHabits(
+              currentLocal,
+              cloudHabits,
+              synced,
+              pendingHabits,
+              isAuthoritative,
+              deletionsRef.current
+            );
             setHabits(merged);
             habitsRef.current = merged;
             Storage.saveHabits(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((h) => h.id), currentUser.uid);
+            }
             setLastSyncedAt(new Date());
 
             if (newToUpload.length > 0) {
               newToUpload.forEach((h) => syncHabitToCloud(currentUser.uid, h));
             }
           },
-          onCompletions: (cloudCompletions) => {
+          onCompletions: (cloudCompletions, meta) => {
             if (!cloudCompletions) return;
-            const deleted = Storage.getDeletedIds();
+            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingCompletions = getPendingWriteIds('completion');
             const currentLocal = completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions();
-            const { merged, newToUpload } = mergeRemoteCompletions(currentLocal, cloudCompletions, deleted, pendingCompletions);
+            const { merged, newToUpload } = mergeRemoteCompletions(
+              currentLocal,
+              cloudCompletions,
+              synced,
+              pendingCompletions,
+              isAuthoritative,
+              deletionsRef.current
+            );
             setCompletions(merged);
             completionsRef.current = merged;
             Storage.saveCompletions(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((c) => c.id), currentUser.uid);
+            }
             setLastSyncedAt(new Date());
 
             if (newToUpload.length > 0) {
               newToUpload.forEach((c) => syncCompletionToCloud(currentUser.uid, c));
             }
           },
-          onTodos: (cloudTodos) => {
+          onTodos: (cloudTodos, meta) => {
             if (!cloudTodos) return;
-            const deleted = Storage.getDeletedIds();
+            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingTodos = getPendingWriteIds('todo');
             const currentLocal = todosRef.current.length > 0 ? todosRef.current : Storage.getTodos();
-            const { merged, newToUpload } = mergeRemoteTodos(currentLocal, cloudTodos, deleted, pendingTodos);
+            const { merged, newToUpload } = mergeRemoteTodos(
+              currentLocal,
+              cloudTodos,
+              synced,
+              pendingTodos,
+              isAuthoritative,
+              deletionsRef.current
+            );
             setTodos(merged);
             todosRef.current = merged;
             Storage.saveTodos(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((t) => t.id), currentUser.uid);
+            }
             setLastSyncedAt(new Date());
 
             if (newToUpload.length > 0) {
               newToUpload.forEach((t) => syncTodoToCloud(currentUser.uid, t));
             }
           },
-          onGoals: (cloudGoals) => {
+          onGoals: (cloudGoals, meta) => {
             if (!cloudGoals) return;
-            const deleted = Storage.getDeletedIds();
+            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingGoals = getPendingWriteIds('goal');
             const currentLocal = goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals();
-            const { merged, newToUpload } = mergeRemoteGoals(currentLocal, cloudGoals, deleted, pendingGoals);
+            const { merged, newToUpload } = mergeRemoteGoals(
+              currentLocal,
+              cloudGoals,
+              synced,
+              pendingGoals,
+              isAuthoritative,
+              deletionsRef.current
+            );
             setGoals(merged);
             goalsRef.current = merged;
             Storage.saveGoals(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((g) => g.id), currentUser.uid);
+            }
             setLastSyncedAt(new Date());
 
             if (newToUpload.length > 0) {
               newToUpload.forEach((g) => syncGoalToCloud(currentUser.uid, g));
             }
           },
-          onSleepLogs: (cloudSleepLogs) => {
+          onSleepLogs: (cloudSleepLogs, meta) => {
             if (!cloudSleepLogs) return;
-            const deleted = Storage.getDeletedIds();
+            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingSleepIds = getPendingWriteIds('sleep');
             const currentLocal = sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs();
             const { merged, newToUpload } = mergeRemoteSleepLogs(
               currentLocal,
               cloudSleepLogs,
-              deleted,
-              pendingSleepIds
+              synced,
+              pendingSleepIds,
+              isAuthoritative,
+              deletionsRef.current
             );
             setSleepLogs(merged);
             sleepLogsRef.current = merged;
             Storage.saveSleepLogs(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((s) => s.id), currentUser.uid);
+            }
             setLastSyncedAt(new Date());
 
             if (newToUpload.length > 0) {
@@ -743,6 +901,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         saveUserProfile(currentUser).catch(() => {});
         flushPendingCloudWrites(currentUser.uid).catch(() => {});
       } else {
+        Storage.setCachedUserId(null);
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
           unsubscribeFirestore = null;
@@ -761,6 +920,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             if (uid) {
               reconnectFirestore();
               flushPendingCloudWrites(uid).catch(() => {});
+              handleForegroundWake();
             }
           }
         };
@@ -769,49 +929,72 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     // Resilient lifecycle listeners: device unlock, mobile foreground, tab focus, network recovery
     const handleForegroundWake = async () => {
+      if (isWakingRef.current) return;
       const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
       if (uid && navigator.onLine) {
-        reconnectFirestore();
-        flushPendingCloudWrites(uid).catch(() => {});
+        isWakingRef.current = true;
         try {
+          reconnectFirestore();
+          await flushPendingCloudWrites(uid);
           const cloudData = await fetchAllCloudData(uid);
           if (cloudData) {
-            const deleted = Storage.getDeletedIds();
+            const synced = Storage.getSyncedIds(uid);
+            const deletions = cloudData.deletions || new Map();
             const pendingSleep = getPendingWriteIds('sleep');
             const pendingHabits = getPendingWriteIds('habit');
             const pendingTodos = getPendingWriteIds('todo');
             const pendingGoals = getPendingWriteIds('goal');
             const pendingCompletions = getPendingWriteIds('completion');
 
-            if (cloudData.sleepLogs) {
-              const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, deleted, pendingSleep);
+            if (cloudData.sleepLogs !== null) {
+              const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, synced, pendingSleep, true, deletions);
               setSleepLogs(sleepMerge.merged);
               sleepLogsRef.current = sleepMerge.merged;
               Storage.saveSleepLogs(sleepMerge.merged);
+              Storage.markSynced(sleepMerge.merged.map((s) => s.id), uid);
+              if (sleepMerge.newToUpload.length > 0) {
+                sleepMerge.newToUpload.forEach((s) => syncSleepLogToCloud(uid, s));
+              }
             }
-            if (cloudData.habits) {
-              const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, deleted, pendingHabits);
+            if (cloudData.habits !== null) {
+              const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, synced, pendingHabits, true, deletions);
               setHabits(habitsMerge.merged);
               habitsRef.current = habitsMerge.merged;
               Storage.saveHabits(habitsMerge.merged);
+              Storage.markSynced(habitsMerge.merged.map((h) => h.id), uid);
+              if (habitsMerge.newToUpload.length > 0) {
+                habitsMerge.newToUpload.forEach((h) => syncHabitToCloud(uid, h));
+              }
             }
-            if (cloudData.todos) {
-              const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, deleted, pendingTodos);
+            if (cloudData.todos !== null) {
+              const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, synced, pendingTodos, true, deletions);
               setTodos(todosMerge.merged);
               todosRef.current = todosMerge.merged;
               Storage.saveTodos(todosMerge.merged);
+              Storage.markSynced(todosMerge.merged.map((t) => t.id), uid);
+              if (todosMerge.newToUpload.length > 0) {
+                todosMerge.newToUpload.forEach((t) => syncTodoToCloud(uid, t));
+              }
             }
-            if (cloudData.goals) {
-              const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, deleted, pendingGoals);
+            if (cloudData.goals !== null) {
+              const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, synced, pendingGoals, true, deletions);
               setGoals(goalsMerge.merged);
               goalsRef.current = goalsMerge.merged;
               Storage.saveGoals(goalsMerge.merged);
+              Storage.markSynced(goalsMerge.merged.map((g) => g.id), uid);
+              if (goalsMerge.newToUpload.length > 0) {
+                goalsMerge.newToUpload.forEach((g) => syncGoalToCloud(uid, g));
+              }
             }
-            if (cloudData.completions) {
-              const compMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, deleted, pendingCompletions);
+            if (cloudData.completions !== null) {
+              const compMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, synced, pendingCompletions, true, deletions);
               setCompletions(compMerge.merged);
               completionsRef.current = compMerge.merged;
               Storage.saveCompletions(compMerge.merged);
+              Storage.markSynced(compMerge.merged.map((c) => c.id), uid);
+              if (compMerge.newToUpload.length > 0) {
+                compMerge.newToUpload.forEach((c) => syncCompletionToCloud(uid, c));
+              }
             }
             if (cloudData.settings) {
               const currentLocalSettings = settingsRef.current || Storage.getSettings();
@@ -833,6 +1016,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           }
         } catch {
           // ignore silent wake update error
+        } finally {
+          isWakingRef.current = false;
         }
       }
     };
@@ -852,6 +1037,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       setIsOnline(false);
     };
 
+    // Active real-time cross-device background heartbeat (every 25 seconds when online and active)
+    const livePollTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible' && navigator.onLine) {
+        handleForegroundWake();
+      }
+    }, 25000);
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleForegroundWake);
     window.addEventListener('pageshow', handleForegroundWake);
@@ -859,6 +1051,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener('offline', handleOffline);
 
     return () => {
+      clearInterval(livePollTimer);
       unsubscribeAuth();
       if (unsubscribeFirestore) {
         unsubscribeFirestore();
@@ -892,10 +1085,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         if (rawCloudData) {
           await purgeCloudDemoItems(
             signedInUser.uid,
-            rawCloudData.habits,
-            rawCloudData.completions,
-            rawCloudData.todos,
-            rawCloudData.sleepLogs
+            rawCloudData.habits || [],
+            rawCloudData.completions || [],
+            rawCloudData.todos || [],
+            rawCloudData.sleepLogs || []
           );
 
           if (rawCloudData.habits && rawCloudData.habits.length > 0) {
@@ -903,23 +1096,27 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             setHabits(cleanHabits);
             habitsRef.current = cleanHabits;
             Storage.saveHabits(cleanHabits);
+            Storage.markSynced(cleanHabits.map((h) => h.id), signedInUser.uid);
           }
           if (rawCloudData.completions && rawCloudData.completions.length > 0) {
             const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
             setCompletions(cleanCompletions);
             completionsRef.current = cleanCompletions;
             Storage.saveCompletions(cleanCompletions);
+            Storage.markSynced(cleanCompletions.map((c) => c.id), signedInUser.uid);
           }
           if (rawCloudData.todos && rawCloudData.todos.length > 0) {
             const cleanTodos = filterCleanTodos(rawCloudData.todos);
             setTodos(cleanTodos);
             todosRef.current = cleanTodos;
             Storage.saveTodos(cleanTodos);
+            Storage.markSynced(cleanTodos.map((t) => t.id), signedInUser.uid);
           }
           if (rawCloudData.goals && rawCloudData.goals.length > 0) {
             setGoals(rawCloudData.goals);
             goalsRef.current = rawCloudData.goals;
             Storage.saveGoals(rawCloudData.goals);
+            Storage.markSynced(rawCloudData.goals.map((g) => g.id), signedInUser.uid);
           }
           if (rawCloudData.sleepLogs && rawCloudData.sleepLogs.length > 0) {
             const cleanSleep = rawCloudData.sleepLogs.filter((s) => s && !s.id.startsWith('seed_sleep_'));
@@ -927,6 +1124,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             setSleepLogs(logsToSet);
             sleepLogsRef.current = logsToSet;
             Storage.saveSleepLogs(logsToSet);
+            Storage.markSynced(logsToSet.map((s) => s.id), signedInUser.uid);
           }
           if (rawCloudData.settings) {
             setSettings(rawCloudData.settings);
@@ -1077,44 +1275,67 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       if (cloudData) {
         await purgeCloudDemoItems(
           uid,
-          cloudData.habits,
-          cloudData.completions,
-          cloudData.todos,
-          cloudData.sleepLogs
+          cloudData.habits || [],
+          cloudData.completions || [],
+          cloudData.todos || [],
+          cloudData.sleepLogs || []
         );
 
-        const deleted = Storage.getDeletedIds();
+        const synced = Storage.getSyncedIds(uid);
+        const deletions = cloudData.deletions || new Map();
         const pendingHabits = getPendingWriteIds('habit');
         const pendingTodos = getPendingWriteIds('todo');
         const pendingGoals = getPendingWriteIds('goal');
         const pendingSleep = getPendingWriteIds('sleep');
         const pendingCompletions = getPendingWriteIds('completion');
 
-        // Bidirectional merge
-        const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, deleted, pendingHabits);
-        setHabits(habitsMerge.merged);
-        habitsRef.current = habitsMerge.merged;
-        Storage.saveHabits(habitsMerge.merged);
+        const newUploadOps: Promise<any>[] = [];
 
-        const completionsMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, deleted, pendingCompletions);
-        setCompletions(completionsMerge.merged);
-        completionsRef.current = completionsMerge.merged;
-        Storage.saveCompletions(completionsMerge.merged);
+        // Bidirectional merge with authoritative check and deletion conflict resolution
+        if (cloudData.habits !== null) {
+          const habitsMerge = mergeRemoteHabits(habitsRef.current, cloudData.habits, synced, pendingHabits, true, deletions);
+          setHabits(habitsMerge.merged);
+          habitsRef.current = habitsMerge.merged;
+          Storage.saveHabits(habitsMerge.merged);
+          Storage.markSynced(habitsMerge.merged.map((h) => h.id), uid);
+          habitsMerge.newToUpload.forEach((h) => newUploadOps.push(syncHabitToCloud(uid, h)));
+        }
 
-        const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, deleted, pendingTodos);
-        setTodos(todosMerge.merged);
-        todosRef.current = todosMerge.merged;
-        Storage.saveTodos(todosMerge.merged);
+        if (cloudData.completions !== null) {
+          const completionsMerge = mergeRemoteCompletions(completionsRef.current, cloudData.completions, synced, pendingCompletions, true, deletions);
+          setCompletions(completionsMerge.merged);
+          completionsRef.current = completionsMerge.merged;
+          Storage.saveCompletions(completionsMerge.merged);
+          Storage.markSynced(completionsMerge.merged.map((c) => c.id), uid);
+          completionsMerge.newToUpload.forEach((c) => newUploadOps.push(syncCompletionToCloud(uid, c)));
+        }
 
-        const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, deleted, pendingGoals);
-        setGoals(goalsMerge.merged);
-        goalsRef.current = goalsMerge.merged;
-        Storage.saveGoals(goalsMerge.merged);
+        if (cloudData.todos !== null) {
+          const todosMerge = mergeRemoteTodos(todosRef.current, cloudData.todos, synced, pendingTodos, true, deletions);
+          setTodos(todosMerge.merged);
+          todosRef.current = todosMerge.merged;
+          Storage.saveTodos(todosMerge.merged);
+          Storage.markSynced(todosMerge.merged.map((t) => t.id), uid);
+          todosMerge.newToUpload.forEach((t) => newUploadOps.push(syncTodoToCloud(uid, t)));
+        }
 
-        const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, deleted, pendingSleep);
-        setSleepLogs(sleepMerge.merged);
-        sleepLogsRef.current = sleepMerge.merged;
-        Storage.saveSleepLogs(sleepMerge.merged);
+        if (cloudData.goals !== null) {
+          const goalsMerge = mergeRemoteGoals(goalsRef.current, cloudData.goals, synced, pendingGoals, true, deletions);
+          setGoals(goalsMerge.merged);
+          goalsRef.current = goalsMerge.merged;
+          Storage.saveGoals(goalsMerge.merged);
+          Storage.markSynced(goalsMerge.merged.map((g) => g.id), uid);
+          goalsMerge.newToUpload.forEach((g) => newUploadOps.push(syncGoalToCloud(uid, g)));
+        }
+
+        if (cloudData.sleepLogs !== null) {
+          const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, synced, pendingSleep, true, deletions);
+          setSleepLogs(sleepMerge.merged);
+          sleepLogsRef.current = sleepMerge.merged;
+          Storage.saveSleepLogs(sleepMerge.merged);
+          Storage.markSynced(sleepMerge.merged.map((s) => s.id), uid);
+          sleepMerge.newToUpload.forEach((s) => newUploadOps.push(syncSleepLogToCloud(uid, s)));
+        }
 
         if (cloudData.settings) {
           const mergedSettings: UserSettings = {
@@ -1132,14 +1353,6 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           Storage.saveSettings(mergedSettings);
         }
 
-        // Upload any items that were waiting to be uploaded
-        const newUploadOps = [
-          ...habitsMerge.newToUpload.map((h) => syncHabitToCloud(uid, h)),
-          ...completionsMerge.newToUpload.map((c) => syncCompletionToCloud(uid, c)),
-          ...todosMerge.newToUpload.map((t) => syncTodoToCloud(uid, t)),
-          ...goalsMerge.newToUpload.map((g) => syncGoalToCloud(uid, g)),
-          ...sleepMerge.newToUpload.map((s) => syncSleepLogToCloud(uid, s)),
-        ];
         if (newUploadOps.length > 0) {
           await Promise.allSettled(newUploadOps);
         }
@@ -1208,15 +1421,15 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       if (rawCloudData) {
         await purgeCloudDemoItems(
           userRef.current.uid,
-          rawCloudData.habits,
-          rawCloudData.completions,
-          rawCloudData.todos,
-          rawCloudData.sleepLogs
+          rawCloudData.habits || [],
+          rawCloudData.completions || [],
+          rawCloudData.todos || [],
+          rawCloudData.sleepLogs || []
         );
 
-        const cleanHabits = filterCleanHabits(rawCloudData.habits);
-        const cleanCompletions = filterCleanCompletions(rawCloudData.completions);
-        const cleanTodos = filterCleanTodos(rawCloudData.todos);
+        const cleanHabits = filterCleanHabits(rawCloudData.habits || []);
+        const cleanCompletions = filterCleanCompletions(rawCloudData.completions || []);
+        const cleanTodos = filterCleanTodos(rawCloudData.todos || []);
 
         setHabits(cleanHabits);
         Storage.saveHabits(cleanHabits);
@@ -1246,6 +1459,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           settingsRef.current = rawCloudData.settings;
           Storage.saveSettings(rawCloudData.settings);
         }
+
+        Storage.markSynced(
+          [
+            ...cleanHabits.map((h) => h.id),
+            ...cleanCompletions.map((c) => c.id),
+            ...sortedTodos.map((t) => t.id),
+            ...(Array.isArray(rawCloudData.goals) ? rawCloudData.goals.map((g) => g.id) : []),
+            ...(Array.isArray(rawCloudData.sleepLogs) ? rawCloudData.sleepLogs.map((s) => s.id) : []),
+          ],
+          userRef.current.uid
+        );
+
         showToast({
           type: 'success',
           title: 'Cloud Data Restored',
@@ -1444,6 +1669,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const deleteHabit = useCallback(
     async (id: string) => {
+      Storage.unmarkSynced(id);
       Storage.markDeleted(id);
       const target = habits.find((h) => h.id === id);
       const updated = habits.filter((h) => h.id !== id);
@@ -1498,6 +1724,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       let newCompletions: HabitCompletion[];
       if (existing) {
         // Toggle OFF
+        Storage.unmarkSynced(existing.id);
         Storage.markDeleted(existing.id);
         newCompletions = completions.filter((c) => c.id !== existing.id);
         persistCompletions(newCompletions);
@@ -1647,6 +1874,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const deleteTodo = useCallback(
     (id: string) => {
+      Storage.unmarkSynced(id);
       Storage.markDeleted(id);
       const target = todos.find((t) => t.id === id);
       const updated = todos.filter((t) => t.id !== id);
@@ -1840,6 +2068,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const deleteGoal = useCallback(
     (id: string) => {
+      Storage.unmarkSynced(id);
       Storage.markDeleted(id);
       const target = goals.find((g) => g.id === id);
       const updated = goals.filter((g) => g.id !== id);
@@ -2256,9 +2485,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const wakeTime = updates.wakeTime || existing.wakeTime;
       const durationMinutes = updates.durationMinutes || calculateSleepDuration(bedtime, wakeTime);
 
+      // If this was an initial seed sleep log, promote it to a real user sleep ID so it persists permanently
+      const isSeed = id.startsWith('seed_sleep_');
+      const promotedId = isSeed
+        ? `sleep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+        : id;
+
       const updatedLog: SleepLog = {
         ...existing,
         ...updates,
+        id: promotedId,
         durationMinutes,
         updatedAt: new Date().toISOString(),
       };
@@ -2268,7 +2504,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         .sort((a, b) => b.date.localeCompare(a.date));
       persistSleepLogs(updatedList);
 
-      syncToCloudNow((uid) => syncSleepLogToCloud(uid, updatedLog));
+      syncToCloudNow(async (uid) => {
+        if (isSeed) {
+          await deleteSleepLogFromCloud(uid, id, false).catch(() => {});
+        }
+        await syncSleepLogToCloud(uid, updatedLog);
+      });
 
       showToast({
         type: 'info',
@@ -2281,6 +2522,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   const deleteSleepLog = useCallback(
     async (id: string) => {
+      Storage.unmarkSynced(id);
       Storage.markDeleted(id);
       const target = sleepLogs.find((l) => l.id === id);
       const updated = sleepLogs.filter((l) => l.id !== id);

@@ -10,7 +10,8 @@ const SLEEP_LOGS_STORAGE_KEY = 'life_os_sleep_logs_v1';
 const ACTIVE_SLEEP_SESSION_KEY = 'life_os_active_sleep_session_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
 const CACHED_USER_KEY = 'life_os_cached_uid';
-const DELETED_IDS_KEY = 'life_os_deleted_ids_v1';
+const DELETED_IDS_KEY = 'lifeos_deleted_ids_v1';
+const SYNCED_IDS_KEY = 'lifeos_synced_record_ids_v1';
 
 export const DEMO_HABIT_IDS = new Set(['habit_1', 'habit_2', 'habit_3', 'habit_4']);
 export const DEMO_TODO_IDS = new Set(['todo_1', 'todo_2', 'todo_3', 'todo_prev_1']);
@@ -374,6 +375,71 @@ export const Storage = {
       const current = this.getDeletedIds();
       current.delete(id);
       localStorage.setItem(DELETED_IDS_KEY, JSON.stringify(Array.from(current)));
+    } catch {}
+  },
+
+  clearDeletedIds(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.removeItem(DELETED_IDS_KEY);
+    } catch {}
+  },
+
+  getSyncedKey(userId?: string): string {
+    const uid = userId || this.getCachedUserId();
+    return uid ? `lifeos_synced_ids_${uid}` : SYNCED_IDS_KEY;
+  },
+
+  getSyncedIds(userId?: string): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const key = this.getSyncedKey(userId);
+      let raw = localStorage.getItem(key);
+      // Seamless migration from legacy un-scoped key if user-scoped key is empty
+      if (!raw && key !== SYNCED_IDS_KEY) {
+        const legacy = localStorage.getItem(SYNCED_IDS_KEY);
+        if (legacy) {
+          raw = legacy;
+          localStorage.setItem(key, legacy);
+        }
+      }
+      if (!raw) return new Set();
+      const list: string[] = JSON.parse(raw);
+      return new Set(Array.isArray(list) ? list : []);
+    } catch {
+      return new Set();
+    }
+  },
+
+  markSynced(idOrIds: string | string[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const key = this.getSyncedKey(userId);
+      const current = this.getSyncedIds(userId);
+      const items = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+      for (const id of items) {
+        if (id && typeof id === 'string') current.add(id);
+      }
+      const arr = Array.from(current).slice(-2000);
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch {}
+  },
+
+  unmarkSynced(id: string, userId?: string): void {
+    if (typeof window === 'undefined' || !id) return;
+    try {
+      const key = this.getSyncedKey(userId);
+      const current = this.getSyncedIds(userId);
+      current.delete(id);
+      localStorage.setItem(key, JSON.stringify(Array.from(current)));
+    } catch {}
+  },
+
+  clearSyncedIds(userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const key = this.getSyncedKey(userId);
+      localStorage.removeItem(key);
     } catch {}
   },
 };
