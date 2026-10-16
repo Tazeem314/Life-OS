@@ -385,6 +385,20 @@ export const Storage = {
     } catch {}
   },
 
+  clearLocalUserData(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.removeItem(HABITS_STORAGE_KEY);
+      localStorage.removeItem(COMPLETIONS_STORAGE_KEY);
+      localStorage.removeItem(TODOS_STORAGE_KEY);
+      localStorage.removeItem(GOALS_STORAGE_KEY);
+      localStorage.removeItem(SETTINGS_STORAGE_KEY);
+      localStorage.removeItem(SLEEP_LOGS_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
+      localStorage.removeItem(DELETED_IDS_KEY);
+    } catch {}
+  },
+
   getSyncedKey(userId?: string): string {
     const uid = userId || this.getCachedUserId();
     return uid ? `lifeos_synced_ids_${uid}` : SYNCED_IDS_KEY;
@@ -395,12 +409,14 @@ export const Storage = {
     try {
       const key = this.getSyncedKey(userId);
       let raw = localStorage.getItem(key);
-      // Seamless migration from legacy un-scoped key if user-scoped key is empty
+      // Seamless one-time migration from legacy un-scoped key
       if (!raw && key !== SYNCED_IDS_KEY) {
         const legacy = localStorage.getItem(SYNCED_IDS_KEY);
         if (legacy) {
           raw = legacy;
           localStorage.setItem(key, legacy);
+          // Remove legacy key so it is claimed only once and cannot bleed into subsequent accounts
+          localStorage.removeItem(SYNCED_IDS_KEY);
         }
       }
       if (!raw) return new Set();

@@ -36,6 +36,7 @@ import {
   DEFAULT_SLEEP_SETTINGS,
   calculateSleepDuration,
   calculateSleepEfficiency,
+  getInitialSeedSleepLogs,
 } from '@/lib/sleep-service';
 import {
   toggleTaskInGoal,
@@ -472,7 +473,6 @@ import {
   signInWithGoogle,
   logoutUser,
   onAuthStateChanged,
-  reconnectFirestore,
   User,
 } from '@/lib/firebase';
 import {
@@ -728,6 +728,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   // Firebase Auth State Listener & Immediate Real-time Cloud Sync
   useEffect(() => {
     let unsubscribeFirestore: (() => void) | null = null;
+    let subscribedUid: string | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -735,8 +736,38 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       setAuthLoading(false);
 
       if (currentUser) {
+        const cachedUid = Storage.getCachedUserId();
+        const lastSignOutUid = typeof window !== 'undefined' ? localStorage.getItem('lifeos_last_signed_out_uid') : null;
+        const isAccountSwitch = (cachedUid && cachedUid !== currentUser.uid) || (lastSignOutUid && lastSignOutUid !== currentUser.uid);
+
+        if (isAccountSwitch) {
+          // Account switch detected: clear in-memory state and un-scoped cache to prevent cross-account data leakage
+          Storage.clearLocalUserData();
+          setHabits([]);
+          habitsRef.current = [];
+          setCompletions([]);
+          completionsRef.current = [];
+          setTodos([]);
+          todosRef.current = [];
+          setGoals([]);
+          goalsRef.current = [];
+          const seeds = getInitialSeedSleepLogs();
+          setSleepLogs(seeds);
+          sleepLogsRef.current = seeds;
+          setSettings(INITIAL_SETTINGS);
+          settingsRef.current = INITIAL_SETTINGS;
+        }
+
         Storage.setCachedUserId(currentUser.uid);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('lifeos_last_signed_out_uid');
+        }
         Storage.clearDeletedIds();
+
+        if (subscribedUid === currentUser.uid && unsubscribeFirestore) {
+          return;
+        }
+        subscribedUid = currentUser.uid;
 
         // 1. Immediately subscribe to real-time updates from Firestore with non-destructive merge
         if (unsubscribeFirestore) {
@@ -749,9 +780,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           },
           onHabits: (cloudHabits, meta) => {
             if (!cloudHabits) return;
-            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            // Ignore optimistic local snapshots to prevent recursive write feedback loops
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
-            const pendingHabits = getPendingWriteIds('habit');
+            const pendingHabits = getPendingWriteIds('habit', currentUser.uid);
             const currentLocal = habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits();
             const { merged, newToUpload } = mergeRemoteHabits(
               currentLocal,
@@ -769,15 +802,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0) {
               newToUpload.forEach((h) => syncHabitToCloud(currentUser.uid, h));
             }
           },
           onCompletions: (cloudCompletions, meta) => {
             if (!cloudCompletions) return;
-            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
-            const pendingCompletions = getPendingWriteIds('completion');
+            const pendingCompletions = getPendingWriteIds('completion', currentUser.uid);
             const currentLocal = completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions();
             const { merged, newToUpload } = mergeRemoteCompletions(
               currentLocal,
@@ -795,15 +829,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0) {
               newToUpload.forEach((c) => syncCompletionToCloud(currentUser.uid, c));
             }
           },
           onTodos: (cloudTodos, meta) => {
             if (!cloudTodos) return;
-            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
-            const pendingTodos = getPendingWriteIds('todo');
+            const pendingTodos = getPendingWriteIds('todo', currentUser.uid);
             const currentLocal = todosRef.current.length > 0 ? todosRef.current : Storage.getTodos();
             const { merged, newToUpload } = mergeRemoteTodos(
               currentLocal,
@@ -821,15 +856,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0) {
               newToUpload.forEach((t) => syncTodoToCloud(currentUser.uid, t));
             }
           },
           onGoals: (cloudGoals, meta) => {
             if (!cloudGoals) return;
-            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
-            const pendingGoals = getPendingWriteIds('goal');
+            const pendingGoals = getPendingWriteIds('goal', currentUser.uid);
             const currentLocal = goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals();
             const { merged, newToUpload } = mergeRemoteGoals(
               currentLocal,
@@ -847,15 +883,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0) {
               newToUpload.forEach((g) => syncGoalToCloud(currentUser.uid, g));
             }
           },
           onSleepLogs: (cloudSleepLogs, meta) => {
             if (!cloudSleepLogs) return;
-            const isAuthoritative = !meta?.fromCache && !meta?.hasPendingWrites;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
-            const pendingSleepIds = getPendingWriteIds('sleep');
+            const pendingSleepIds = getPendingWriteIds('sleep', currentUser.uid);
             const currentLocal = sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs();
             const { merged, newToUpload } = mergeRemoteSleepLogs(
               currentLocal,
@@ -873,12 +910,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0) {
               newToUpload.forEach((s) => syncSleepLogToCloud(currentUser.uid, s));
             }
           },
-          onSettings: (cloudSettings) => {
+          onSettings: (cloudSettings, meta) => {
             if (!cloudSettings) return;
+            if (meta?.hasPendingWrites) return;
             const currentLocalSettings = settingsRef.current || Storage.getSettings();
             const mergedSettings: UserSettings = {
               ...INITIAL_SETTINGS,
@@ -901,7 +939,27 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         saveUserProfile(currentUser).catch(() => {});
         flushPendingCloudWrites(currentUser.uid).catch(() => {});
       } else {
+        subscribedUid = null;
+        const currentUid = userRef.current?.uid || Storage.getCachedUserId();
+        if (currentUid && typeof window !== 'undefined') {
+          localStorage.setItem('lifeos_last_signed_out_uid', currentUid);
+        }
         Storage.setCachedUserId(null);
+        Storage.clearLocalUserData();
+        setHabits([]);
+        habitsRef.current = [];
+        setCompletions([]);
+        completionsRef.current = [];
+        setTodos([]);
+        todosRef.current = [];
+        setGoals([]);
+        goalsRef.current = [];
+        const seeds = getInitialSeedSleepLogs();
+        setSleepLogs(seeds);
+        sleepLogsRef.current = seeds;
+        setSettings(INITIAL_SETTINGS);
+        settingsRef.current = INITIAL_SETTINGS;
+
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
           unsubscribeFirestore = null;
@@ -918,7 +976,6 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           if (event.data?.type === 'CHANGE_MADE') {
             const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId();
             if (uid) {
-              reconnectFirestore();
               flushPendingCloudWrites(uid).catch(() => {});
               handleForegroundWake();
             }
@@ -934,17 +991,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       if (uid && navigator.onLine) {
         isWakingRef.current = true;
         try {
-          reconnectFirestore();
           await flushPendingCloudWrites(uid);
           const cloudData = await fetchAllCloudData(uid);
           if (cloudData) {
             const synced = Storage.getSyncedIds(uid);
             const deletions = cloudData.deletions || new Map();
-            const pendingSleep = getPendingWriteIds('sleep');
-            const pendingHabits = getPendingWriteIds('habit');
-            const pendingTodos = getPendingWriteIds('todo');
-            const pendingGoals = getPendingWriteIds('goal');
-            const pendingCompletions = getPendingWriteIds('completion');
+            const pendingSleep = getPendingWriteIds('sleep', uid);
+            const pendingHabits = getPendingWriteIds('habit', uid);
+            const pendingTodos = getPendingWriteIds('todo', uid);
+            const pendingGoals = getPendingWriteIds('goal', uid);
+            const pendingCompletions = getPendingWriteIds('completion', uid);
 
             if (cloudData.sleepLogs !== null) {
               const sleepMerge = mergeRemoteSleepLogs(sleepLogsRef.current, cloudData.sleepLogs, synced, pendingSleep, true, deletions);
@@ -1075,8 +1131,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       Storage.setCachedUserId(signedInUser.uid);
       await saveUserProfile(signedInUser);
 
-      // Trigger immediate network reconnect and flush
-      reconnectFirestore();
+      // Flush any queued offline writes
       flushPendingCloudWrites(signedInUser.uid).catch(() => {});
 
       // Instantly pull all cloud data to populate device immediately
@@ -1173,10 +1228,29 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   // Sign out
   const logout = useCallback(async () => {
     try {
+      const currentUid = userRef.current?.uid || Storage.getCachedUserId();
+      if (currentUid && typeof window !== 'undefined') {
+        localStorage.setItem('lifeos_last_signed_out_uid', currentUid);
+      }
       await logoutUser();
       setUser(null);
       userRef.current = null;
       Storage.setCachedUserId(null);
+      Storage.clearLocalUserData();
+      setHabits([]);
+      habitsRef.current = [];
+      setCompletions([]);
+      completionsRef.current = [];
+      setTodos([]);
+      todosRef.current = [];
+      setGoals([]);
+      goalsRef.current = [];
+      const seeds = getInitialSeedSleepLogs();
+      setSleepLogs(seeds);
+      sleepLogsRef.current = seeds;
+      setSettings(INITIAL_SETTINGS);
+      settingsRef.current = INITIAL_SETTINGS;
+
       showToast({
         type: 'info',
         title: 'Signed Out',
@@ -1267,7 +1341,6 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     setIsSyncing(true);
     try {
-      reconnectFirestore();
       await flushPendingCloudWrites(uid);
 
       // 1. Fetch latest state from cloud
@@ -1283,11 +1356,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
         const synced = Storage.getSyncedIds(uid);
         const deletions = cloudData.deletions || new Map();
-        const pendingHabits = getPendingWriteIds('habit');
-        const pendingTodos = getPendingWriteIds('todo');
-        const pendingGoals = getPendingWriteIds('goal');
-        const pendingSleep = getPendingWriteIds('sleep');
-        const pendingCompletions = getPendingWriteIds('completion');
+        const pendingHabits = getPendingWriteIds('habit', uid);
+        const pendingTodos = getPendingWriteIds('todo', uid);
+        const pendingGoals = getPendingWriteIds('goal', uid);
+        const pendingSleep = getPendingWriteIds('sleep', uid);
+        const pendingCompletions = getPendingWriteIds('completion', uid);
 
         const newUploadOps: Promise<any>[] = [];
 

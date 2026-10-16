@@ -66,7 +66,13 @@ export function cleanForFirestore<T>(data: T): T {
   return cleaned as T;
 }
 
-const PENDING_QUEUE_KEY = 'lifeos_pending_cloud_writes';
+export function getPendingQueueKey(userId?: string): string {
+  const uid =
+    userId ||
+    auth.currentUser?.uid ||
+    (typeof window !== 'undefined' ? localStorage.getItem('life_os_cached_uid') : null);
+  return uid ? `lifeos_pending_writes_${uid}` : 'lifeos_pending_cloud_writes';
+}
 
 export interface PendingWrite {
   type:
@@ -86,10 +92,11 @@ export interface PendingWrite {
   timestamp: number;
 }
 
-export function queuePendingWrite(write: PendingWrite): void {
+export function queuePendingWrite(write: PendingWrite, userId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    const key = getPendingQueueKey(userId);
+    const raw = localStorage.getItem(key);
     const queue: PendingWrite[] = raw ? JSON.parse(raw) : [];
     const targetId = write.id || (write.data && write.data.id) || (write.type === 'settings' ? 'settings' : '');
     // Deduplicate: replace any older pending write for the exact same item
@@ -98,28 +105,30 @@ export function queuePendingWrite(write: PendingWrite): void {
       return !(itemId && itemId === targetId);
     });
     deduplicated.push(write);
-    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(deduplicated.slice(-150)));
+    localStorage.setItem(key, JSON.stringify(deduplicated.slice(-150)));
   } catch {}
 }
 
-export function removePendingWrite(type: string, id: string): void {
+export function removePendingWrite(type: string, id: string, userId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    const key = getPendingQueueKey(userId);
+    const raw = localStorage.getItem(key);
     if (!raw) return;
     const queue: PendingWrite[] = JSON.parse(raw);
     const filtered = queue.filter((item) => {
       const itemId = item.id || (item.data && item.data.id) || (item.type === 'settings' ? 'settings' : '');
       return !(item.type === type && itemId === id);
     });
-    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(filtered));
+    localStorage.setItem(key, JSON.stringify(filtered));
   } catch {}
 }
 
-export function getPendingWriteIds(type?: string): Set<string> {
+export function getPendingWriteIds(type?: string, userId?: string): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    const key = getPendingQueueKey(userId);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const queue: PendingWrite[] = JSON.parse(raw);
     const ids = new Set<string>();
@@ -139,7 +148,8 @@ let isFlushing = false;
 export async function flushPendingCloudWrites(userId: string): Promise<void> {
   if (typeof window === 'undefined' || !userId || isFlushing) return;
   try {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    const key = getPendingQueueKey(userId);
+    const raw = localStorage.getItem(key);
     if (!raw) return;
     const queue: PendingWrite[] = JSON.parse(raw);
     if (!Array.isArray(queue) || queue.length === 0) return;
@@ -190,9 +200,9 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
     }
 
     if (remaining.length > 0) {
-      localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(remaining));
+      localStorage.setItem(key, JSON.stringify(remaining));
     } else {
-      localStorage.removeItem(PENDING_QUEUE_KEY);
+      localStorage.removeItem(key);
     }
   } catch (err) {
     console.warn('Failed to flush pending cloud writes:', err);
@@ -271,8 +281,12 @@ export async function deleteHabitFromCloud(userId: string, habitId: string, shou
   }
   try {
     const habitRef = doc(db, 'users', userId, 'habits', habitId);
-    await deleteDoc(habitRef);
-    await recordCloudDeletion(userId, habitId, 'habit');
+    const delRef = doc(db, 'users', userId, 'deletions', habitId);
+    const batch = writeBatch(db);
+    batch.delete(habitRef);
+    batch.set(delRef, { id: habitId, type: 'habit', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+
     if (shouldQueue) {
       removePendingWrite('habit_delete', habitId);
     }
@@ -285,11 +299,13 @@ export async function deleteHabitFromCloud(userId: string, habitId: string, shou
       );
       const compSnap = await getDocs(compQuery);
       if (!compSnap.empty) {
-        const batch = writeBatch(db);
+        const compBatch = writeBatch(db);
         compSnap.forEach((docSnap) => {
-          batch.delete(docSnap.ref);
+          compBatch.delete(docSnap.ref);
+          const compDelRef = doc(db, 'users', userId, 'deletions', docSnap.id);
+          compBatch.set(compDelRef, { id: docSnap.id, type: 'completion', deletedAt: new Date().toISOString() }, { merge: true });
         });
-        await batch.commit();
+        await compBatch.commit();
       }
     } catch (e) {
       console.warn('Could not batch delete habit completions:', e);
@@ -321,8 +337,11 @@ export async function deleteCompletionFromCloud(userId: string, completionId: st
   }
   try {
     const compRef = doc(db, 'users', userId, 'habitCompletions', completionId);
-    await deleteDoc(compRef);
-    await recordCloudDeletion(userId, completionId, 'completion');
+    const delRef = doc(db, 'users', userId, 'deletions', completionId);
+    const batch = writeBatch(db);
+    batch.delete(compRef);
+    batch.set(delRef, { id: completionId, type: 'completion', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
     if (shouldQueue) {
       removePendingWrite('completion_delete', completionId);
     }
@@ -353,8 +372,11 @@ export async function deleteTodoFromCloud(userId: string, todoId: string, should
   }
   try {
     const todoRef = doc(db, 'users', userId, 'todos', todoId);
-    await deleteDoc(todoRef);
-    await recordCloudDeletion(userId, todoId, 'todo');
+    const delRef = doc(db, 'users', userId, 'deletions', todoId);
+    const batch = writeBatch(db);
+    batch.delete(todoRef);
+    batch.set(delRef, { id: todoId, type: 'todo', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
     if (shouldQueue) {
       removePendingWrite('todo_delete', todoId);
     }
@@ -385,8 +407,11 @@ export async function deleteGoalFromCloud(userId: string, goalId: string, should
   }
   try {
     const goalRef = doc(db, 'users', userId, 'goals', goalId);
-    await deleteDoc(goalRef);
-    await recordCloudDeletion(userId, goalId, 'goal');
+    const delRef = doc(db, 'users', userId, 'deletions', goalId);
+    const batch = writeBatch(db);
+    batch.delete(goalRef);
+    batch.set(delRef, { id: goalId, type: 'goal', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
     if (shouldQueue) {
       removePendingWrite('goal_delete', goalId);
     }
@@ -417,8 +442,11 @@ export async function deleteSleepLogFromCloud(userId: string, sleepLogId: string
   }
   try {
     const sleepRef = doc(db, 'users', userId, 'sleepLogs', sleepLogId);
-    await deleteDoc(sleepRef);
-    await recordCloudDeletion(userId, sleepLogId, 'sleep');
+    const delRef = doc(db, 'users', userId, 'deletions', sleepLogId);
+    const batch = writeBatch(db);
+    batch.delete(sleepRef);
+    batch.set(delRef, { id: sleepLogId, type: 'sleep', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
     if (shouldQueue) {
       removePendingWrite('sleep_delete', sleepLogId);
     }
@@ -737,13 +765,17 @@ export function subscribeToUserCloudData(
     const handleListenerError = (operation: OperationType, path: string) => (err: unknown) => {
       handleFirestoreError(err, operation, path);
       if (isUnsubscribed) return;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('INTERNAL ASSERTION FAILED')) {
+        return;
+      }
       if (!retryTimer) {
         retryTimer = setTimeout(() => {
           retryTimer = null;
           if (!isUnsubscribed) {
             setupSubscriptions();
           }
-        }, 2500);
+        }, 5000);
       }
     };
 

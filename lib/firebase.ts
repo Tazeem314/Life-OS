@@ -90,11 +90,23 @@ export const db = (() => {
   }
 })();
 
+let isNetworkDisabled = false;
+
+export async function disableFirestoreNetwork(): Promise<void> {
+  try {
+    isNetworkDisabled = true;
+    await disableNetwork(db);
+  } catch {}
+}
+
 /**
- * Re-enables Firestore network connection immediately (used on visibilitychange / online)
+ * Re-enables Firestore network connection only if it was explicitly disabled.
+ * Prevents redundant enableNetwork() calls that corrupt WatchChangeAggregator in Firestore Web SDK.
  */
 export async function reconnectFirestore(): Promise<void> {
+  if (!isNetworkDisabled) return;
   try {
+    isNetworkDisabled = false;
     await enableNetwork(db);
   } catch (err) {
     // If already enabled or not supported in current state, ignore silently
