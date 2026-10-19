@@ -18,9 +18,16 @@ import { PWAInstallButton } from '@/components/PWAInstallButton';
 interface NavbarProps {
   onOpenNewHabit?: () => void;
   onOpenNewTodo?: () => void;
+  onToggleMobileNav?: () => void;
+  isMobileNavOpen?: boolean;
 }
 
-export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps = {}) {
+export function Navbar({
+  onOpenNewHabit,
+  onOpenNewTodo,
+  onToggleMobileNav,
+  isMobileNavOpen,
+}: NavbarProps = {}) {
   const {
     overallStreaks,
     settings,
@@ -49,17 +56,26 @@ export function Navbar({ onOpenNewHabit, onOpenNewTodo }: NavbarProps = {}) {
         {/* Brand & Date indicator */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 flex items-center justify-center font-bold text-sm tracking-tighter shrink-0 shadow-xs">
-              ⌘
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="font-bold tracking-tight text-zinc-900 dark:text-zinc-100 text-base">
-                Life OS
-              </span>
-              <span className="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">
-                Daily Tracker
-              </span>
-            </div>
+            <button
+              type="button"
+              onClick={onToggleMobileNav}
+              aria-label="Open navigation menu"
+              aria-expanded={isMobileNavOpen}
+              title="Open navigation menu"
+              className="flex items-center gap-2.5 p-1 -m-1 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-850 active:scale-95 transition-all text-left cursor-pointer md:cursor-default focus:outline-hidden focus-visible:ring-2 focus-visible:ring-sky-500 group"
+            >
+              <div className="w-8 h-8 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 flex items-center justify-center font-bold text-sm tracking-tighter shrink-0 shadow-xs group-hover:scale-105 active:scale-95 transition-transform">
+                ⌘
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="font-bold tracking-tight text-zinc-900 dark:text-zinc-100 text-base">
+                  Life OS
+                </span>
+                <span className="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">
+                  Daily Tracker
+                </span>
+              </div>
+            </button>
           </div>
 
           <div className="hidden md:flex items-center gap-2 pl-3 border-l border-zinc-200 dark:border-zinc-800">

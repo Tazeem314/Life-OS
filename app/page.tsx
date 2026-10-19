@@ -65,6 +65,9 @@ function LifeOSAppContent() {
   const [selectedHistoryHabit, setSelectedHistoryHabit] = useState<Habit | null>(null);
   const [selectedAnalyticsHabit, setSelectedAnalyticsHabit] = useState<Habit | null>(null);
 
+  // Mobile Navigation Drawer State
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+
   // Confirmation Dialog State
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
@@ -181,15 +184,18 @@ function LifeOSAppContent() {
   return (
     <div className="min-h-screen bg-zinc-100/60 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans selection:bg-sky-500 selection:text-white transition-colors duration-200">
       {/* Top Navbar */}
-      <Navbar />
+      <Navbar
+        onToggleMobileNav={() => setIsMobileNavOpen((prev) => !prev)}
+        isMobileNavOpen={isMobileNavOpen}
+      />
 
       {/* Main Layout Body */}
-      <div className="flex-1 flex max-w-7xl w-full mx-auto">
+      <div className="flex-1 flex items-start max-w-7xl w-full mx-auto">
         {/* Desktop Left Sidebar */}
         <Sidebar />
 
         {/* Dynamic Page Views */}
-        <main className="flex-1 px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-8 max-w-full overflow-x-hidden">
+        <main className="flex-1 min-w-0 px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-8 max-w-full overflow-x-hidden">
           <AnimatePresence mode="wait">
             {activeTab === 'dashboard' && (
               <motion.div
@@ -356,8 +362,11 @@ function LifeOSAppContent() {
         </main>
       </div>
 
-      {/* Mobile Bottom Dock */}
-      <MobileNav />
+      {/* Mobile Navigation Sidebar Drawer */}
+      <MobileNav
+        isOpen={isMobileNavOpen}
+        onClose={() => setIsMobileNavOpen(false)}
+      />
 
       {/* Floating Notifications */}
       <ToastContainer />

@@ -77,7 +77,7 @@ export function Sidebar() {
   ];
 
   return (
-    <aside className="hidden md:flex flex-col w-64 shrink-0 border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/40 dark:bg-zinc-950/40 p-3 min-h-[calc(100vh-57px)]">
+    <aside className="hidden md:flex flex-col w-64 shrink-0 border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/40 dark:bg-zinc-950/40 p-3 sticky top-[57px] self-start h-[calc(100vh-57px)] overflow-y-auto no-scrollbar z-30">
       <nav className="space-y-1 flex-1">
         {navItems.map((item) => {
           const Icon = item.icon;
