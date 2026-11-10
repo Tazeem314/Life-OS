@@ -79,7 +79,9 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'sleep' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'savings' | 'sleep' | 'notifications' | 'calendar' | 'progress' | 'settings';
+
+export * from './notification-types';
 
 export interface ToastMessage {
   id: string;
@@ -629,5 +631,109 @@ export interface AISleepInsight {
   actionableTips: string[];
 }
 
+// ==========================================
+// SAVINGS & FINANCIAL COMMAND CENTER TYPES
+// ==========================================
 
+export type SavingsGoalCategory =
+  | 'emergency'
+  | 'vacation'
+  | 'tech'
+  | 'vehicle'
+  | 'home'
+  | 'education'
+  | 'investment'
+  | 'lifestyle'
+  | 'custom';
 
+export type SavingsGoalStatus = 'active' | 'completed' | 'paused' | 'archived';
+
+export interface SavingsGoal {
+  id: string;
+  userId?: string;
+  name: string;
+  description?: string;
+  targetAmount: number;
+  currentAmount: number; // Allocated saved amount
+  targetDate?: string;   // YYYY-MM-DD
+  category: SavingsGoalCategory;
+  color: string;         // e.g. 'emerald', 'sky', 'indigo', 'amber', 'rose', 'purple'
+  icon: string;          // Icon key
+  status: SavingsGoalStatus;
+  priority?: 'low' | 'medium' | 'high';
+  notes?: string;
+  createdAt: string;     // ISO
+  updatedAt: string;     // ISO
+}
+
+export type SavingsTransactionType = 'deposit' | 'withdrawal' | 'transfer';
+
+export interface SavingsTransaction {
+  id: string;
+  userId?: string;
+  type: SavingsTransactionType;
+  amount: number;        // Always positive number
+  date: string;          // YYYY-MM-DD
+  goalId?: string | null; // null or 'general' indicates General Savings (unallocated)
+  destinationGoalId?: string | null; // Used for 'transfer' type (target goal or 'general')
+  category: string;      // e.g. 'Salary', 'Bonus', 'Side Hustle', 'Gift', 'Purchase', 'Emergency', etc.
+  notes?: string;
+  createdAt: string;     // ISO
+  updatedAt: string;     // ISO
+}
+
+export interface SavingsSettings {
+  currency: string;       // e.g. '$', '€', '£', '₹', etc.
+  monthlyTarget: number;  // e.g. 1000
+  emergencyFundMonths?: number;
+}
+
+export interface MonthlySavingsRecord {
+  monthKey: string;      // YYYY-MM
+  monthName: string;     // e.g. 'Oct 2026'
+  deposits: number;
+  withdrawals: number;
+  net: number;
+  cumulativeSavings: number;
+}
+
+export interface SavingsCategoryBreakdown {
+  category: string;
+  deposits: number;
+  withdrawals: number;
+  total: number;
+  percentage: number;
+}
+
+export interface SavingsAnalyticsSummary {
+  totalSavings: number;            // Net total: total deposits - total withdrawals
+  totalDeposits: number;           // All-time deposits
+  totalWithdrawals: number;        // All-time withdrawals
+  allocatedSavings: number;        // Sum of all savings goals currentAmount
+  generalSavings: number;          // totalSavings - allocatedSavings (unallocated)
+  thisMonthDeposits: number;
+  thisMonthWithdrawals: number;
+  thisMonthNet: number;
+  monthlySavingsRate: number;      // % of deposits retained this month
+  activeGoalsCount: number;
+  completedGoalsCount: number;
+  overallGoalProgress: number;     // % across all active goals
+  monthlyRecords: MonthlySavingsRecord[];
+  categoryBreakdown: SavingsCategoryBreakdown[];
+}
+
+export interface AISavingsInsight {
+  headline: string;
+  summary: string;
+  healthScore: number;             // 0 - 100
+  healthStatus: 'Excellent' | 'Good' | 'Fair' | 'Needs Attention';
+  monthlyRunwayOrGrowth: string;
+  goalRecommendations: {
+    goalId?: string;
+    goalName: string;
+    recommendedMonthly: number;
+    projectedCompletion: string;
+    advice: string;
+  }[];
+  actionableTips: string[];
+}

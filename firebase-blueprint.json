@@ -108,6 +108,59 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "date", "bedtime", "wakeTime", "durationMinutes", "qualityRating"]
+    },
+    "SavingsGoal": {
+      "title": "SavingsGoal",
+      "description": "User savings target item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "targetAmount": { "type": "number" },
+        "currentAmount": { "type": "number" },
+        "targetDate": { "type": "string" },
+        "category": { "type": "string" },
+        "color": { "type": "string" },
+        "icon": { "type": "string" },
+        "status": { "type": "string" },
+        "priority": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "targetAmount", "currentAmount", "category", "status"]
+    },
+    "SavingsTransaction": {
+      "title": "SavingsTransaction",
+      "description": "Savings deposit, withdrawal, or transfer record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "goalId": { "type": "string" },
+        "destinationGoalId": { "type": "string" },
+        "category": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "amount", "date"]
+    },
+    "SavingsSettings": {
+      "title": "SavingsSettings",
+      "description": "User savings preferences and targets",
+      "type": "object",
+      "properties": {
+        "currency": { "type": "string" },
+        "monthlyTarget": { "type": "number" },
+        "emergencyFundMonths": { "type": "number" }
+      },
+      "required": ["currency", "monthlyTarget"]
     }
   },
   "firestore": {
@@ -134,6 +187,18 @@
     "/users/{userId}/sleepLogs/{logId}": {
       "schema": "SleepLog",
       "description": "Sleep logs for the user"
+    },
+    "/users/{userId}/savingsGoals/{goalId}": {
+      "schema": "SavingsGoal",
+      "description": "Savings goals for the user"
+    },
+    "/users/{userId}/savingsTransactions/{transactionId}": {
+      "schema": "SavingsTransaction",
+      "description": "Savings transactions for the user"
+    },
+    "/users/{userId}/savingsSettings/{settingsId}": {
+      "schema": "SavingsSettings",
+      "description": "Savings configuration settings for the user"
     },
     "/users/{userId}/settings/{settingsId}": {
       "schema": "UserSettings",

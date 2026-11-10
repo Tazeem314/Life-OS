@@ -30,6 +30,11 @@ import {
   SleepAnalyticsSummary,
   SleepQuality,
   WakeMood,
+  SavingsGoal,
+  SavingsTransaction,
+  SavingsSettings,
+  SavingsAnalyticsSummary,
+  AISavingsInsight,
 } from '@/lib/types';
 import {
   calculateSleepAnalytics,
@@ -38,6 +43,11 @@ import {
   calculateSleepEfficiency,
   getInitialSeedSleepLogs,
 } from '@/lib/sleep-service';
+import {
+  calculateSavingsAnalytics,
+  DEFAULT_SAVINGS_SETTINGS,
+  formatCurrency,
+} from '@/lib/savings-service';
 import {
   toggleTaskInGoal,
   toggleMilestoneInGoal,
@@ -371,6 +381,134 @@ const mergeRemoteSleepLogs = (
   return { merged, newToUpload };
 };
 
+const mergeRemoteSavingsGoals = (
+  local: SavingsGoal[],
+  remote: SavingsGoal[],
+  syncedIds: Set<string>,
+  pendingGoalUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
+): { merged: SavingsGoal[]; newToUpload: SavingsGoal[] } => {
+  const map = new Map<string, SavingsGoal>();
+  const newToUpload: SavingsGoal[] = [];
+
+  for (const g of remote || []) {
+    if (g && g.id) {
+      map.set(g.id, g);
+    }
+  }
+
+  for (const l of local || []) {
+    if (!l || !l.id) continue;
+
+    if (map.has(l.id)) {
+      if (pendingGoalUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    } else {
+      if (!isAuthoritative) {
+        map.set(l.id, l);
+        if (!syncedIds.has(l.id) || pendingGoalUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
+      } else {
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingGoalUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite('savings_goal', l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()), newToUpload };
+};
+
+const mergeRemoteSavingsTransactions = (
+  local: SavingsTransaction[],
+  remote: SavingsTransaction[],
+  syncedIds: Set<string>,
+  pendingTxUploadIds: Set<string> = new Set(),
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
+): { merged: SavingsTransaction[]; newToUpload: SavingsTransaction[] } => {
+  const map = new Map<string, SavingsTransaction>();
+  const newToUpload: SavingsTransaction[] = [];
+
+  for (const t of remote || []) {
+    if (t && t.id) {
+      map.set(t.id, t);
+    }
+  }
+
+  for (const l of local || []) {
+    if (!l || !l.id) continue;
+
+    if (map.has(l.id)) {
+      if (pendingTxUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        if (l.updatedAt && r.updatedAt && new Date(l.updatedAt).getTime() > new Date(r.updatedAt).getTime()) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    } else {
+      if (!isAuthoritative) {
+        map.set(l.id, l);
+        if (!syncedIds.has(l.id) || pendingTxUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
+      } else {
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingTxUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite('savings_transaction', l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date)), newToUpload };
+};
+
 const mergeRemoteCompletions = (
   local: HabitCompletion[],
   remote: HabitCompletion[],
@@ -487,6 +625,11 @@ import {
   deleteGoalFromCloud,
   syncSleepLogToCloud,
   deleteSleepLogFromCloud,
+  syncSavingsGoalToCloud,
+  deleteSavingsGoalFromCloud,
+  syncSavingsTransactionToCloud,
+  deleteSavingsTransactionFromCloud,
+  syncSavingsSettingsToCloud,
   syncSettingsToCloud,
   uploadInitialDataToCloud,
   checkHasCloudData,
@@ -496,7 +639,31 @@ import {
   flushPendingCloudWrites,
   getPendingWriteIds,
   removePendingWrite,
+  syncNotificationToCloud,
+  deleteNotificationFromCloud,
+  markAllNotificationsReadInCloud,
+  syncReminderToCloud,
+  deleteReminderFromCloud,
+  syncNotificationSettingsToCloud,
+  syncAIBriefingToCloud,
 } from '@/lib/firestore-service';
+import {
+  NotificationRecord,
+  ReminderDefinition,
+  NotificationSettings,
+  AIDailyBriefing,
+  DEFAULT_NOTIFICATION_SETTINGS,
+} from '@/lib/notification-types';
+import {
+  isQuietHoursActive,
+  pruneExpiredNotifications,
+  playNotificationSound,
+  requestAIDailyBriefing,
+} from '@/lib/notification-service';
+import {
+  evaluateAllReminders,
+  ReminderEvaluationContext,
+} from '@/lib/reminder-engine';
 import firebaseConfig from '@/firebase-applet-config.json';
 
 interface LifeOSContextType {
@@ -583,6 +750,20 @@ interface LifeOSContextType {
   cancelSleepSession: () => void;
   updateSleepSettings: (settings: Partial<SleepSettings>) => void;
 
+  // Savings Operations & State
+  savingsGoals: SavingsGoal[];
+  savingsTransactions: SavingsTransaction[];
+  savingsSettings: SavingsSettings;
+  savingsAnalytics: SavingsAnalyticsSummary;
+  createSavingsGoal: (goal: Omit<SavingsGoal, 'id' | 'createdAt' | 'updatedAt' | 'currentAmount'> & { initialDeposit?: number }) => { success: boolean; error?: string; goal?: SavingsGoal };
+  updateSavingsGoal: (id: string, updates: Partial<SavingsGoal>) => { success: boolean; error?: string };
+  deleteSavingsGoal: (id: string, reallocateToGeneral?: boolean) => void;
+  addSavingsTransaction: (tx: Omit<SavingsTransaction, 'id' | 'createdAt' | 'updatedAt'>) => { success: boolean; error?: string; transaction?: SavingsTransaction };
+  updateSavingsTransaction: (id: string, updates: Partial<SavingsTransaction>) => { success: boolean; error?: string };
+  deleteSavingsTransaction: (id: string) => void;
+  transferSavings: (amount: number, sourceGoalId: string | null, destGoalId: string | null, notes?: string) => { success: boolean; error?: string };
+  updateSavingsSettings: (settings: Partial<SavingsSettings>) => void;
+
   // Stats & Progress
   todayProgress: DayProgress;
   selectedDateProgress: DayProgress;
@@ -600,6 +781,25 @@ interface LifeOSContextType {
   showToast: (toast: Omit<ToastMessage, 'id'>) => void;
   removeToast: (id: string) => void;
   triggerCelebration: () => void;
+
+  // Notification State & Operations
+  notifications: NotificationRecord[];
+  unreadNotificationsCount: number;
+  customReminders: ReminderDefinition[];
+  notificationSettings: NotificationSettings;
+  aiBriefings: AIDailyBriefing[];
+  markNotificationAsRead: (id: string) => Promise<void>;
+  markAllNotificationsAsRead: () => Promise<void>;
+  deleteNotification: (id: string) => Promise<void>;
+  clearAllReadNotifications: () => Promise<void>;
+  snoozeNotification: (id: string, minutes: number) => Promise<void>;
+  dispatchNotification: (notif: Omit<NotificationRecord, 'id' | 'createdAt'>) => Promise<NotificationRecord>;
+  createReminder: (reminder: Omit<ReminderDefinition, 'id' | 'createdAt' | 'updatedAt'>) => Promise<ReminderDefinition>;
+  updateReminder: (id: string, updates: Partial<ReminderDefinition>) => Promise<void>;
+  deleteReminder: (id: string) => Promise<void>;
+  updateNotificationSettings: (settings: Partial<NotificationSettings>) => Promise<void>;
+  generateAIDailyBriefing: (forceRefresh?: boolean) => Promise<AIDailyBriefing | null>;
+  evaluateNotificationHeartbeat: () => Promise<void>;
 }
 
 const LifeOSContext = createContext<LifeOSContextType | null>(null);
@@ -622,11 +822,53 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [sleepLogs, setSleepLogs] = useState<SleepLog[]>([]);
   const [activeSleepSession, setActiveSleepSession] = useState<ActiveSleepSession | null>(null);
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
+  const [savingsTransactions, setSavingsTransactions] = useState<SavingsTransaction[]>([]);
+  const [savingsSettings, setSavingsSettings] = useState<SavingsSettings>(DEFAULT_SAVINGS_SETTINGS);
   const [settings, setSettings] = useState<UserSettings>(INITIAL_SETTINGS);
+
+  // Notification state
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [customReminders, setCustomReminders] = useState<ReminderDefinition[]>([]);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(DEFAULT_NOTIFICATION_SETTINGS);
+  const [aiBriefings, setAIBriefings] = useState<AIDailyBriefing[]>([]);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [selectedDate, setSelectedDate] = useState<string>(getTodayKey);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // State refs to guarantee fresh data in asynchronous callbacks
+  const userRef = useRef<User | null>(null);
+  const habitsRef = useRef<Habit[]>(habits);
+  const completionsRef = useRef<HabitCompletion[]>(completions);
+  const todosRef = useRef<Todo[]>(todos);
+  const goalsRef = useRef<Goal[]>(goals);
+  const sleepLogsRef = useRef<SleepLog[]>(sleepLogs);
+  const savingsGoalsRef = useRef<SavingsGoal[]>(savingsGoals);
+  const savingsTransactionsRef = useRef<SavingsTransaction[]>(savingsTransactions);
+  const savingsSettingsRef = useRef<SavingsSettings>(savingsSettings);
+  const settingsRef = useRef<UserSettings>(settings);
+  const notificationsRef = useRef<NotificationRecord[]>(notifications);
+  const customRemindersRef = useRef<ReminderDefinition[]>(customReminders);
+  const notificationSettingsRef = useRef<NotificationSettings>(DEFAULT_NOTIFICATION_SETTINGS);
+  const aiBriefingsRef = useRef<AIDailyBriefing[]>(aiBriefings);
+  const isWakingRef = useRef<boolean>(false);
+  const deletionsRef = useRef<Map<string, string>>(new Map());
+
+  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => { habitsRef.current = habits; }, [habits]);
+  useEffect(() => { completionsRef.current = completions; }, [completions]);
+  useEffect(() => { todosRef.current = todos; }, [todos]);
+  useEffect(() => { goalsRef.current = goals; }, [goals]);
+  useEffect(() => { sleepLogsRef.current = sleepLogs; }, [sleepLogs]);
+  useEffect(() => { savingsGoalsRef.current = savingsGoals; }, [savingsGoals]);
+  useEffect(() => { savingsTransactionsRef.current = savingsTransactions; }, [savingsTransactions]);
+  useEffect(() => { savingsSettingsRef.current = savingsSettings; }, [savingsSettings]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { notificationsRef.current = notifications; }, [notifications]);
+  useEffect(() => { customRemindersRef.current = customReminders; }, [customReminders]);
+  useEffect(() => { notificationSettingsRef.current = notificationSettings || DEFAULT_NOTIFICATION_SETTINGS; }, [notificationSettings]);
+  useEffect(() => { aiBriefingsRef.current = aiBriefings; }, [aiBriefings]);
 
   const persistGoals = useCallback((newGoals: Goal[]) => {
     setGoals(newGoals);
@@ -637,6 +879,25 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setSleepLogs(newLogs);
     Storage.saveSleepLogs(newLogs);
   }, []);
+
+  const persistSavingsGoals = useCallback((newGoals: SavingsGoal[]) => {
+    setSavingsGoals(newGoals);
+    Storage.saveSavingsGoals(newGoals);
+  }, []);
+
+  const persistSavingsTransactions = useCallback((newTransactions: SavingsTransaction[]) => {
+    setSavingsTransactions(newTransactions);
+    Storage.saveSavingsTransactions(newTransactions);
+  }, []);
+
+  const persistSavingsSettings = useCallback((newSettings: SavingsSettings) => {
+    setSavingsSettings(newSettings);
+    Storage.saveSavingsSettings(newSettings);
+  }, []);
+
+  const savingsAnalytics = useMemo(() => {
+    return calculateSavingsAnalytics(savingsGoals, savingsTransactions, savingsSettings);
+  }, [savingsGoals, savingsTransactions, savingsSettings]);
 
   const dailyContributions = useMemo(() => {
     return computeDailyGoalContributions(goals, habits, completions, todos, selectedDate);
@@ -652,6 +913,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const savedGoals = Storage.getGoals();
         const savedSleepLogs = Storage.getSleepLogs();
         const savedSession = Storage.getActiveSleepSession();
+        const savedSavingsGoals = Storage.getSavingsGoals();
+        const savedSavingsTransactions = Storage.getSavingsTransactions();
+        const savedSavingsSettings = Storage.getSavingsSettings();
         const savedSettings = Storage.getSettings();
 
         setHabits(savedHabits);
@@ -660,32 +924,42 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         setGoals(savedGoals);
         setSleepLogs(savedSleepLogs);
         setActiveSleepSession(savedSession);
+        setSavingsGoals(savedSavingsGoals);
+        setSavingsTransactions(savedSavingsTransactions);
+        setSavingsSettings(savedSavingsSettings);
         setSettings(savedSettings);
+
+        try {
+          const storedNotifs = localStorage.getItem('lifeos_notifications_v1');
+          if (storedNotifs) {
+            const parsedNotifs = JSON.parse(storedNotifs);
+            if (Array.isArray(parsedNotifs)) setNotifications(parsedNotifs);
+          }
+          const storedReminders = localStorage.getItem('lifeos_reminders_v1');
+          if (storedReminders) {
+            const parsedReminders = JSON.parse(storedReminders);
+            if (Array.isArray(parsedReminders)) setCustomReminders(parsedReminders);
+          }
+          const storedNotifSettings = localStorage.getItem('lifeos_notif_settings_v1');
+          if (storedNotifSettings) {
+            const parsedSettings = JSON.parse(storedNotifSettings);
+            if (parsedSettings && typeof parsedSettings === 'object') {
+              const merged = { ...DEFAULT_NOTIFICATION_SETTINGS, ...parsedSettings };
+              setNotificationSettings(merged);
+            }
+          }
+          const storedBriefings = localStorage.getItem('lifeos_ai_briefings_v1');
+          if (storedBriefings) {
+            const parsedBriefings = JSON.parse(storedBriefings);
+            if (Array.isArray(parsedBriefings)) setAIBriefings(parsedBriefings);
+          }
+        } catch {}
       } catch (err) {
         console.warn('Failed to load local storage state:', err);
       }
     }, 0);
     return () => clearTimeout(timer);
   }, []);
-
-  // State refs to guarantee fresh data in asynchronous callbacks
-  const userRef = useRef<User | null>(null);
-  const habitsRef = useRef<Habit[]>(habits);
-  const completionsRef = useRef<HabitCompletion[]>(completions);
-  const todosRef = useRef<Todo[]>(todos);
-  const goalsRef = useRef<Goal[]>(goals);
-  const sleepLogsRef = useRef<SleepLog[]>(sleepLogs);
-  const settingsRef = useRef<UserSettings>(settings);
-  const isWakingRef = useRef<boolean>(false);
-  const deletionsRef = useRef<Map<string, string>>(new Map());
-
-  useEffect(() => { userRef.current = user; }, [user]);
-  useEffect(() => { habitsRef.current = habits; }, [habits]);
-  useEffect(() => { completionsRef.current = completions; }, [completions]);
-  useEffect(() => { todosRef.current = todos; }, [todos]);
-  useEffect(() => { goalsRef.current = goals; }, [goals]);
-  useEffect(() => { sleepLogsRef.current = sleepLogs; }, [sleepLogs]);
-  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // Lightweight heartbeat: ensures offline writes are flushed without locking the client
   useEffect(() => {
@@ -933,6 +1207,106 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             Storage.saveSettings(mergedSettings);
             setLastSyncedAt(new Date());
           },
+          onSavingsGoals: (cloudSavingsGoals, meta) => {
+            if (!cloudSavingsGoals) return;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const synced = Storage.getSyncedIds(currentUser.uid);
+            const pendingGoals = getPendingWriteIds('savings_goal', currentUser.uid);
+            const currentLocal = savingsGoalsRef.current.length > 0 ? savingsGoalsRef.current : Storage.getSavingsGoals();
+            const { merged, newToUpload } = mergeRemoteSavingsGoals(
+              currentLocal,
+              cloudSavingsGoals,
+              synced,
+              pendingGoals,
+              isAuthoritative,
+              deletionsRef.current
+            );
+            setSavingsGoals(merged);
+            savingsGoalsRef.current = merged;
+            Storage.saveSavingsGoals(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((g) => g.id), currentUser.uid);
+            }
+            setLastSyncedAt(new Date());
+
+            if (isAuthoritative && newToUpload.length > 0) {
+              newToUpload.forEach((g) => syncSavingsGoalToCloud(currentUser.uid, g));
+            }
+          },
+          onSavingsTransactions: (cloudSavingsTx, meta) => {
+            if (!cloudSavingsTx) return;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const synced = Storage.getSyncedIds(currentUser.uid);
+            const pendingTx = getPendingWriteIds('savings_transaction', currentUser.uid);
+            const currentLocal = savingsTransactionsRef.current.length > 0 ? savingsTransactionsRef.current : Storage.getSavingsTransactions();
+            const { merged, newToUpload } = mergeRemoteSavingsTransactions(
+              currentLocal,
+              cloudSavingsTx,
+              synced,
+              pendingTx,
+              isAuthoritative,
+              deletionsRef.current
+            );
+            setSavingsTransactions(merged);
+            savingsTransactionsRef.current = merged;
+            Storage.saveSavingsTransactions(merged);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((t) => t.id), currentUser.uid);
+            }
+            setLastSyncedAt(new Date());
+
+            if (isAuthoritative && newToUpload.length > 0) {
+              newToUpload.forEach((t) => syncSavingsTransactionToCloud(currentUser.uid, t));
+            }
+          },
+          onSavingsSettings: (cloudSavingsSettings, meta) => {
+            if (!cloudSavingsSettings) return;
+            if (meta?.hasPendingWrites) return;
+            const currentLocal = savingsSettingsRef.current || Storage.getSavingsSettings();
+            const merged = {
+              ...DEFAULT_SAVINGS_SETTINGS,
+              ...currentLocal,
+              ...cloudSavingsSettings,
+            };
+            setSavingsSettings(merged);
+            savingsSettingsRef.current = merged;
+            Storage.saveSavingsSettings(merged);
+          },
+          onNotifications: (cloudNotifs) => {
+            if (!cloudNotifs) return;
+            setNotifications(cloudNotifs);
+            notificationsRef.current = cloudNotifs;
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('lifeos_notifications_v1', JSON.stringify(cloudNotifs));
+            }
+          },
+          onReminders: (cloudReminders) => {
+            if (!cloudReminders) return;
+            setCustomReminders(cloudReminders);
+            customRemindersRef.current = cloudReminders;
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('lifeos_reminders_v1', JSON.stringify(cloudReminders));
+            }
+          },
+          onNotificationSettings: (cloudSettings) => {
+            if (!cloudSettings) return;
+            const merged = { ...DEFAULT_NOTIFICATION_SETTINGS, ...cloudSettings };
+            setNotificationSettings(merged);
+            notificationSettingsRef.current = merged;
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('lifeos_notif_settings_v1', JSON.stringify(merged));
+            }
+          },
+          onAIBriefings: (cloudBriefings) => {
+            if (!cloudBriefings) return;
+            setAIBriefings(cloudBriefings);
+            aiBriefingsRef.current = cloudBriefings;
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('lifeos_ai_briefings_v1', JSON.stringify(cloudBriefings));
+            }
+          },
         });
 
         // 2. In background, save profile & flush any queued offline writes
@@ -957,8 +1331,30 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const seeds = getInitialSeedSleepLogs();
         setSleepLogs(seeds);
         sleepLogsRef.current = seeds;
+        setSavingsGoals([]);
+        savingsGoalsRef.current = [];
+        setSavingsTransactions([]);
+        savingsTransactionsRef.current = [];
+        setSavingsSettings(DEFAULT_SAVINGS_SETTINGS);
+        savingsSettingsRef.current = DEFAULT_SAVINGS_SETTINGS;
         setSettings(INITIAL_SETTINGS);
         settingsRef.current = INITIAL_SETTINGS;
+
+        // Clean user notifications on sign out
+        setNotifications([]);
+        notificationsRef.current = [];
+        setCustomReminders([]);
+        customRemindersRef.current = [];
+        setAIBriefings([]);
+        aiBriefingsRef.current = [];
+        setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
+        notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('lifeos_notifications_v1');
+          localStorage.removeItem('lifeos_reminders_v1');
+          localStorage.removeItem('lifeos_notif_settings_v1');
+          localStorage.removeItem('lifeos_ai_briefings_v1');
+        }
 
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
@@ -1186,6 +1582,23 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             settingsRef.current = rawCloudData.settings;
             Storage.saveSettings(rawCloudData.settings);
           }
+          if (rawCloudData.savingsGoals && rawCloudData.savingsGoals.length > 0) {
+            setSavingsGoals(rawCloudData.savingsGoals);
+            savingsGoalsRef.current = rawCloudData.savingsGoals;
+            Storage.saveSavingsGoals(rawCloudData.savingsGoals);
+            Storage.markSynced(rawCloudData.savingsGoals.map((g) => g.id), signedInUser.uid);
+          }
+          if (rawCloudData.savingsTransactions && rawCloudData.savingsTransactions.length > 0) {
+            setSavingsTransactions(rawCloudData.savingsTransactions);
+            savingsTransactionsRef.current = rawCloudData.savingsTransactions;
+            Storage.saveSavingsTransactions(rawCloudData.savingsTransactions);
+            Storage.markSynced(rawCloudData.savingsTransactions.map((t) => t.id), signedInUser.uid);
+          }
+          if (rawCloudData.savingsSettings) {
+            setSavingsSettings(rawCloudData.savingsSettings);
+            savingsSettingsRef.current = rawCloudData.savingsSettings;
+            Storage.saveSavingsSettings(rawCloudData.savingsSettings);
+          }
         }
       } catch (e) {
         console.warn('Initial cloud pull on login error:', e);
@@ -1248,6 +1661,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const seeds = getInitialSeedSleepLogs();
       setSleepLogs(seeds);
       sleepLogsRef.current = seeds;
+      setSavingsGoals([]);
+      savingsGoalsRef.current = [];
+      setSavingsTransactions([]);
+      savingsTransactionsRef.current = [];
+      setSavingsSettings(DEFAULT_SAVINGS_SETTINGS);
+      savingsSettingsRef.current = DEFAULT_SAVINGS_SETTINGS;
       setSettings(INITIAL_SETTINGS);
       settingsRef.current = INITIAL_SETTINGS;
 
@@ -2849,6 +3268,759 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     [showToast]
   );
 
+  // ==========================================
+  // SAVINGS OPERATIONS
+  // ==========================================
+
+  const createSavingsGoal = useCallback(
+    (goalInput: Omit<SavingsGoal, 'id' | 'createdAt' | 'updatedAt' | 'currentAmount'> & { initialDeposit?: number }) => {
+      const { initialDeposit, ...goalData } = goalInput;
+      if (!goalData.name || !goalData.name.trim()) {
+        return { success: false, error: 'Goal name is required' };
+      }
+      if (goalData.targetAmount <= 0) {
+        return { success: false, error: 'Target amount must be greater than 0' };
+      }
+
+      const id = `goal_sav_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const now = new Date().toISOString();
+      const depositAmount = Math.max(0, Number(initialDeposit) || 0);
+
+      const newGoal: SavingsGoal = {
+        ...goalData,
+        id,
+        currentAmount: depositAmount,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const updatedGoals = [...savingsGoalsRef.current, newGoal];
+      persistSavingsGoals(updatedGoals);
+      savingsGoalsRef.current = updatedGoals;
+
+      syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, newGoal));
+
+      if (depositAmount > 0) {
+        const txId = `tx_sav_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const initialTx: SavingsTransaction = {
+          id: txId,
+          type: 'deposit',
+          amount: depositAmount,
+          date: getTodayKey(),
+          goalId: id,
+          category: 'Salary',
+          notes: `Initial opening deposit for "${newGoal.name}"`,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const updatedTx = [initialTx, ...savingsTransactionsRef.current];
+        persistSavingsTransactions(updatedTx);
+        savingsTransactionsRef.current = updatedTx;
+        syncToCloudNow((uid) => syncSavingsTransactionToCloud(uid, initialTx));
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Savings Goal Created',
+        message: `Target "${newGoal.name}" established with ${formatCurrency(newGoal.targetAmount, savingsSettings.currency)} goal.`,
+      });
+
+      return { success: true, goal: newGoal };
+    },
+    [persistSavingsGoals, persistSavingsTransactions, savingsSettings.currency, showToast, syncToCloudNow]
+  );
+
+  const updateSavingsGoal = useCallback(
+    (id: string, updates: Partial<SavingsGoal>) => {
+      const existing = savingsGoalsRef.current.find((g) => g.id === id);
+      if (!existing) return { success: false, error: 'Goal not found' };
+
+      Storage.unmarkDeleted(id);
+      const now = new Date().toISOString();
+      const updatedGoal: SavingsGoal = {
+        ...existing,
+        ...updates,
+        id,
+        updatedAt: now,
+      };
+
+      const updatedList = savingsGoalsRef.current.map((g) => (g.id === id ? updatedGoal : g));
+      persistSavingsGoals(updatedList);
+      savingsGoalsRef.current = updatedList;
+
+      syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, updatedGoal));
+
+      showToast({
+        type: 'info',
+        title: 'Goal Updated',
+        message: `"${updatedGoal.name}" updated successfully.`,
+      });
+
+      return { success: true };
+    },
+    [persistSavingsGoals, showToast, syncToCloudNow]
+  );
+
+  const deleteSavingsGoal = useCallback(
+    (id: string, reallocateToGeneral = true) => {
+      const existing = savingsGoalsRef.current.find((g) => g.id === id);
+      if (!existing) return;
+
+      Storage.unmarkSynced(id);
+      Storage.markDeleted(id);
+
+      const updatedGoals = savingsGoalsRef.current.filter((g) => g.id !== id);
+      persistSavingsGoals(updatedGoals);
+      savingsGoalsRef.current = updatedGoals;
+
+      syncToCloudNow((uid) => deleteSavingsGoalFromCloud(uid, id));
+
+      if (reallocateToGeneral) {
+        let hasChanges = false;
+        const now = new Date().toISOString();
+        const updatedTx = savingsTransactionsRef.current.map((t) => {
+          if (t.goalId === id) {
+            hasChanges = true;
+            const updated = {
+              ...t,
+              goalId: null,
+              notes: `${t.notes || ''} (reallocated from deleted goal "${existing.name}")`.trim(),
+              updatedAt: now,
+            };
+            syncToCloudNow((uid) => syncSavingsTransactionToCloud(uid, updated));
+            return updated;
+          }
+          return t;
+        });
+
+        if (hasChanges) {
+          persistSavingsTransactions(updatedTx);
+          savingsTransactionsRef.current = updatedTx;
+        }
+      }
+
+      showToast({
+        type: 'info',
+        title: 'Goal Removed',
+        message: `Savings target "${existing.name}" removed.${reallocateToGeneral ? ' Allocated funds returned to General Savings.' : ''}`,
+      });
+    },
+    [persistSavingsGoals, persistSavingsTransactions, showToast, syncToCloudNow]
+  );
+
+  const addSavingsTransaction = useCallback(
+    (txInput: Omit<SavingsTransaction, 'id' | 'createdAt' | 'updatedAt'>) => {
+      if (!txInput.amount || txInput.amount <= 0) {
+        return { success: false, error: 'Transaction amount must be greater than 0' };
+      }
+
+      const id = `tx_sav_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const now = new Date().toISOString();
+
+      const newTx: SavingsTransaction = {
+        ...txInput,
+        id,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const updatedTx = [newTx, ...savingsTransactionsRef.current].sort((a, b) => b.date.localeCompare(a.date));
+      persistSavingsTransactions(updatedTx);
+      savingsTransactionsRef.current = updatedTx;
+
+      if (newTx.goalId && newTx.goalId !== 'general') {
+        const targetGoal = savingsGoalsRef.current.find((g) => g.id === newTx.goalId);
+        if (targetGoal) {
+          let updatedAmount = targetGoal.currentAmount;
+          if (newTx.type === 'deposit') {
+            updatedAmount += newTx.amount;
+          } else if (newTx.type === 'withdrawal') {
+            updatedAmount = Math.max(0, updatedAmount - newTx.amount);
+          }
+          const updatedGoal = { ...targetGoal, currentAmount: updatedAmount, updatedAt: now };
+          const updatedGoals = savingsGoalsRef.current.map((g) => (g.id === targetGoal.id ? updatedGoal : g));
+          persistSavingsGoals(updatedGoals);
+          savingsGoalsRef.current = updatedGoals;
+          syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, updatedGoal));
+        }
+      }
+
+      syncToCloudNow((uid) => syncSavingsTransactionToCloud(uid, newTx));
+
+      showToast({
+        type: 'success',
+        title: newTx.type === 'deposit' ? 'Money Saved' : 'Withdrawal Logged',
+        message: `${formatCurrency(newTx.amount, savingsSettings.currency)} logged under ${newTx.category}.`,
+      });
+
+      return { success: true, transaction: newTx };
+    },
+    [persistSavingsGoals, persistSavingsTransactions, savingsSettings.currency, showToast, syncToCloudNow]
+  );
+
+  const updateSavingsTransaction = useCallback(
+    (id: string, updates: Partial<SavingsTransaction>) => {
+      const existing = savingsTransactionsRef.current.find((t) => t.id === id);
+      if (!existing) return { success: false, error: 'Transaction not found' };
+
+      Storage.unmarkDeleted(id);
+      const now = new Date().toISOString();
+      const updatedTx: SavingsTransaction = {
+        ...existing,
+        ...updates,
+        id,
+        updatedAt: now,
+      };
+
+      const oldGoalId = existing.goalId;
+      const newGoalId = updatedTx.goalId;
+      const oldAmount = existing.amount;
+      const newAmount = updatedTx.amount;
+      const oldType = existing.type;
+      const newType = updatedTx.type;
+
+      let goalsNeedUpdate = false;
+      const newGoalsList = [...savingsGoalsRef.current];
+
+      if (oldGoalId && oldGoalId !== 'general') {
+        const g = newGoalsList.find((x) => x.id === oldGoalId);
+        if (g) {
+          const delta = oldType === 'deposit' ? -oldAmount : oldAmount;
+          g.currentAmount = Math.max(0, g.currentAmount + delta);
+          goalsNeedUpdate = true;
+        }
+      }
+
+      if (newGoalId && newGoalId !== 'general') {
+        const g = newGoalsList.find((x) => x.id === newGoalId);
+        if (g) {
+          const delta = newType === 'deposit' ? newAmount : -newAmount;
+          g.currentAmount = Math.max(0, g.currentAmount + delta);
+          goalsNeedUpdate = true;
+        }
+      }
+
+      if (goalsNeedUpdate) {
+        persistSavingsGoals(newGoalsList);
+        savingsGoalsRef.current = newGoalsList;
+        newGoalsList.forEach((g) => syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, g)));
+      }
+
+      const updatedList = savingsTransactionsRef.current
+        .map((t) => (t.id === id ? updatedTx : t))
+        .sort((a, b) => b.date.localeCompare(a.date));
+
+      persistSavingsTransactions(updatedList);
+      savingsTransactionsRef.current = updatedList;
+
+      syncToCloudNow((uid) => syncSavingsTransactionToCloud(uid, updatedTx));
+
+      showToast({
+        type: 'info',
+        title: 'Transaction Updated',
+        message: 'Savings transaction successfully modified.',
+      });
+
+      return { success: true };
+    },
+    [persistSavingsGoals, persistSavingsTransactions, showToast, syncToCloudNow]
+  );
+
+  const deleteSavingsTransaction = useCallback(
+    (id: string) => {
+      const existing = savingsTransactionsRef.current.find((t) => t.id === id);
+      if (!existing) return;
+
+      Storage.unmarkSynced(id);
+      Storage.markDeleted(id);
+
+      if (existing.goalId && existing.goalId !== 'general') {
+        const goal = savingsGoalsRef.current.find((g) => g.id === existing.goalId);
+        if (goal) {
+          const delta = existing.type === 'deposit' ? -existing.amount : existing.amount;
+          const updatedGoal = {
+            ...goal,
+            currentAmount: Math.max(0, goal.currentAmount + delta),
+            updatedAt: new Date().toISOString(),
+          };
+          const updatedGoals = savingsGoalsRef.current.map((g) => (g.id === goal.id ? updatedGoal : g));
+          persistSavingsGoals(updatedGoals);
+          savingsGoalsRef.current = updatedGoals;
+          syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, updatedGoal));
+        }
+      }
+
+      const updatedList = savingsTransactionsRef.current.filter((t) => t.id !== id);
+      persistSavingsTransactions(updatedList);
+      savingsTransactionsRef.current = updatedList;
+
+      syncToCloudNow((uid) => deleteSavingsTransactionFromCloud(uid, id));
+
+      showToast({
+        type: 'info',
+        title: 'Transaction Removed',
+        message: 'The transaction has been deleted.',
+      });
+    },
+    [persistSavingsGoals, persistSavingsTransactions, showToast, syncToCloudNow]
+  );
+
+  const transferSavings = useCallback(
+    (amount: number, sourceGoalId: string | null, destGoalId: string | null, notes?: string) => {
+      if (amount <= 0) return { success: false, error: 'Transfer amount must be positive' };
+      if (sourceGoalId === destGoalId) return { success: false, error: 'Source and destination must differ' };
+
+      const now = new Date().toISOString();
+      const updatedGoals = [...savingsGoalsRef.current];
+
+      if (sourceGoalId && sourceGoalId !== 'general') {
+        const src = updatedGoals.find((g) => g.id === sourceGoalId);
+        if (!src) return { success: false, error: 'Source goal not found' };
+        if (src.currentAmount < amount) {
+          return { success: false, error: `Insufficient funds in "${src.name}". Available: ${formatCurrency(src.currentAmount, savingsSettings.currency)}` };
+        }
+        src.currentAmount -= amount;
+        src.updatedAt = now;
+        syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, src));
+      }
+
+      if (destGoalId && destGoalId !== 'general') {
+        const dst = updatedGoals.find((g) => g.id === destGoalId);
+        if (!dst) return { success: false, error: 'Destination goal not found' };
+        dst.currentAmount += amount;
+        dst.updatedAt = now;
+        syncToCloudNow((uid) => syncSavingsGoalToCloud(uid, dst));
+      }
+
+      persistSavingsGoals(updatedGoals);
+      savingsGoalsRef.current = updatedGoals;
+
+      const txId = `tx_sav_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const transferTx: SavingsTransaction = {
+        id: txId,
+        type: 'transfer',
+        amount,
+        date: getTodayKey(),
+        goalId: sourceGoalId,
+        destinationGoalId: destGoalId,
+        category: 'Transfer',
+        notes: notes || 'Funds reallocated between savings buckets',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const updatedTx = [transferTx, ...savingsTransactionsRef.current];
+      persistSavingsTransactions(updatedTx);
+      savingsTransactionsRef.current = updatedTx;
+
+      syncToCloudNow((uid) => syncSavingsTransactionToCloud(uid, transferTx));
+
+      showToast({
+        type: 'success',
+        title: 'Funds Transferred',
+        message: `${formatCurrency(amount, savingsSettings.currency)} successfully reallocated.`,
+      });
+
+      return { success: true };
+    },
+    [persistSavingsGoals, persistSavingsTransactions, savingsSettings.currency, showToast, syncToCloudNow]
+  );
+
+  const updateSavingsSettings = useCallback(
+    (newSettings: Partial<SavingsSettings>) => {
+      const merged: SavingsSettings = {
+        ...savingsSettingsRef.current,
+        ...newSettings,
+      };
+      persistSavingsSettings(merged);
+      savingsSettingsRef.current = merged;
+
+      syncToCloudNow((uid) => syncSavingsSettingsToCloud(uid, merged));
+
+      showToast({
+        type: 'success',
+        title: 'Savings Settings Saved',
+        message: 'Your currency and target preferences were updated.',
+      });
+    },
+    [persistSavingsSettings, showToast, syncToCloudNow]
+  );
+
+  // -------------------------------------------------------------
+  // NOTIFICATION & REMINDER OPERATIONS
+  // -------------------------------------------------------------
+  const [currentTimestamp, setCurrentTimestamp] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTimestamp(Date.now());
+    }, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const unreadNotificationsCount = useMemo(() => {
+    return notifications.filter((n) => {
+      if (n.read) return false;
+      if (n.snoozeUntil && currentTimestamp > 0 && new Date(n.snoozeUntil).getTime() > currentTimestamp) return false;
+      return true;
+    }).length;
+  }, [notifications, currentTimestamp]);
+
+  const markNotificationAsRead = useCallback(async (id: string) => {
+    const now = new Date().toISOString();
+    setNotifications((prev) => {
+      const updated = prev.map((n) => (n.id === id ? { ...n, read: true, readAt: now } : n));
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+    if (user?.uid) {
+      const target = notificationsRef.current.find((n) => n.id === id);
+      if (target) {
+        syncNotificationToCloud(user.uid, { ...target, read: true, readAt: now });
+      }
+    }
+  }, [user]);
+
+  const markAllNotificationsAsRead = useCallback(async () => {
+    const now = new Date().toISOString();
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+
+    setNotifications((prev) => {
+      const updated = prev.map((n) => ({ ...n, read: true, readAt: n.readAt || now }));
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      markAllNotificationsReadInCloud(user.uid, unreadIds);
+    }
+  }, [user, notifications]);
+
+  const deleteNotification = useCallback(async (id: string) => {
+    setNotifications((prev) => {
+      const updated = prev.filter((n) => n.id !== id);
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+    if (user?.uid) {
+      deleteNotificationFromCloud(user.uid, id);
+    }
+  }, [user]);
+
+  const clearAllReadNotifications = useCallback(async () => {
+    const readIds = notifications.filter((n) => n.read).map((n) => n.id);
+    if (readIds.length === 0) return;
+
+    setNotifications((prev) => {
+      const updated = prev.filter((n) => !n.read);
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      for (const id of readIds) {
+        deleteNotificationFromCloud(user.uid, id);
+      }
+    }
+  }, [user, notifications]);
+
+  const snoozeNotification = useCallback(async (id: string, minutes: number) => {
+    const snoozeUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    setNotifications((prev) => {
+      const updated = prev.map((n) => (n.id === id ? { ...n, snoozeUntil } : n));
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+    if (user?.uid) {
+      const target = notificationsRef.current.find((n) => n.id === id);
+      if (target) {
+        syncNotificationToCloud(user.uid, { ...target, snoozeUntil });
+      }
+    }
+    showToast({
+      title: 'Reminder Snoozed',
+      message: `Snoozed for ${minutes} minute${minutes > 1 ? 's' : ''}`,
+      type: 'info',
+    });
+  }, [user, showToast]);
+
+  const dispatchNotification = useCallback(async (notifInput: Omit<NotificationRecord, 'id' | 'createdAt'>) => {
+    const id = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const newNotif: NotificationRecord = {
+      ...notifInput,
+      id,
+      createdAt: new Date().toISOString(),
+    };
+
+    setNotifications((prev) => {
+      if (newNotif.deduplicationKey && prev.some((n) => n.deduplicationKey === newNotif.deduplicationKey)) {
+        return prev;
+      }
+      const updated = [newNotif, ...prev];
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      syncNotificationToCloud(user.uid, newNotif);
+    }
+
+    const currentSettings = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
+    if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
+      playNotificationSound();
+    }
+
+    return newNotif;
+  }, [user]);
+
+  const createReminder = useCallback(async (reminderInput: Omit<ReminderDefinition, 'id' | 'createdAt' | 'updatedAt'>) => {
+    const nowIso = new Date().toISOString();
+    const id = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const newRem: ReminderDefinition = {
+      ...reminderInput,
+      id,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    setCustomReminders((prev) => {
+      const updated = [newRem, ...prev];
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_reminders_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      syncReminderToCloud(user.uid, newRem);
+    }
+
+    showToast({
+      title: 'Reminder Created',
+      message: `"${newRem.title}" scheduled for ${newRem.timeOfDay || newRem.targetTime}`,
+      type: 'success',
+    });
+
+    return newRem;
+  }, [user, showToast]);
+
+  const updateReminder = useCallback(async (id: string, updates: Partial<ReminderDefinition>) => {
+    const nowIso = new Date().toISOString();
+    setCustomReminders((prev) => {
+      const updated = prev.map((r) => (r.id === id ? { ...r, ...updates, updatedAt: nowIso } : r));
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_reminders_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      const target = customRemindersRef.current.find((r) => r.id === id);
+      if (target) {
+        syncReminderToCloud(user.uid, { ...target, ...updates, updatedAt: nowIso });
+      }
+    }
+  }, [user]);
+
+  const deleteReminder = useCallback(async (id: string) => {
+    setCustomReminders((prev) => {
+      const updated = prev.filter((r) => r.id !== id);
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_reminders_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user?.uid) {
+      deleteReminderFromCloud(user.uid, id);
+    }
+
+    showToast({
+      title: 'Reminder Deleted',
+      message: 'The reminder schedule was removed',
+      type: 'info',
+    });
+  }, [user, showToast]);
+
+  const updateNotificationSettings = useCallback(async (updates: Partial<NotificationSettings>) => {
+    setNotificationSettings((prev) => {
+      const base = prev || DEFAULT_NOTIFICATION_SETTINGS;
+      const merged = { ...base, ...updates };
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notif_settings_v1', JSON.stringify(merged));
+      return merged;
+    });
+
+    if (user?.uid) {
+      const base = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
+      const merged = { ...base, ...updates };
+      syncNotificationSettingsToCloud(user.uid, merged);
+    }
+
+    showToast({
+      title: 'Preferences Updated',
+      message: 'Your notification settings have been saved',
+      type: 'success',
+    });
+  }, [user, showToast]);
+
+  const generateAIDailyBriefing = useCallback(async (forceRefresh = false): Promise<AIDailyBriefing | null> => {
+    const today = getTodayKey();
+    const existing = aiBriefingsRef.current.find((b) => b.date === today || b.dateKey === today);
+    if (existing && !forceRefresh) {
+      return existing;
+    }
+
+    const pendingTasks = todosRef.current.filter((t) => !t.completed);
+    const activeHabits = habitsRef.current.filter((h) => h.status !== 'paused');
+    const completedTodayHabits = completionsRef.current.filter((c) => (c as any).dateKey === today || (c as any).date === today);
+    const completedHabitCount = activeHabits.filter((h) => completedTodayHabits.some((c) => c.habitId === h.id)).length;
+    const activeGoalsList = goalsRef.current.filter((g) => g.status === 'in_progress');
+
+    const result = await requestAIDailyBriefing({
+      userId: user?.uid || 'local_user',
+      dateKey: today,
+      date: today,
+      pendingTasksCount: pendingTasks.length,
+      highPriorityTasks: pendingTasks.filter((t) => t.priority === 'high').map((t) => t.title),
+      habitsDueCount: activeHabits.length,
+      habitsCompletedCount: completedHabitCount,
+      activeGoalsCount: activeGoalsList.length,
+      focusGoalTitle: activeGoalsList[0]?.title,
+      totalSavingsBalance: savingsAnalytics?.totalSavings,
+      lastNightSleepHours: sleepLogsRef.current.length > 0 ? sleepLogsRef.current[0].durationMinutes / 60 : undefined,
+      todayTasks: pendingTasks.slice(0, 5).map((t) => ({ title: t.title, priority: String(t.priority), completed: false })),
+      todayHabits: activeHabits.slice(0, 5).map((h) => ({ name: h.name, completed: completedTodayHabits.some((c) => c.habitId === h.id) })),
+    });
+
+    if (result.briefing) {
+      setAIBriefings((prev) => {
+        const filtered = prev.filter((b) => b.id !== result.briefing!.id && b.date !== result.briefing!.date && b.dateKey !== result.briefing!.dateKey);
+        const updated = [result.briefing!, ...filtered];
+        if (typeof window !== 'undefined') localStorage.setItem('lifeos_ai_briefings_v1', JSON.stringify(updated));
+        return updated;
+      });
+
+      if (user?.uid) {
+        syncAIBriefingToCloud(user.uid, result.briefing);
+      }
+
+      const briefingNotif: NotificationRecord = {
+        id: `briefing_notif_${Date.now()}`,
+        userId: user?.uid,
+        category: 'ai_briefing',
+        title: result.briefing.headline || `Daily Briefing • ${today}`,
+        message: result.briefing.summary,
+        type: 'ai_briefing',
+        priority: 'high',
+        deepLink: '/?tab=notifications',
+        read: false,
+        sourceType: 'ai_briefing',
+        sourceId: result.briefing.id,
+        idempotencyKey: `ai_briefing_${today}`,
+        deduplicationKey: `ai_briefing_${today}`,
+        createdAt: new Date().toISOString(),
+      };
+
+      setNotifications((prev) => {
+        if (prev.some((n) => n.idempotencyKey === briefingNotif.idempotencyKey || n.deduplicationKey === briefingNotif.deduplicationKey)) {
+          return prev;
+        }
+        const updated = [briefingNotif, ...prev];
+        if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+        return updated;
+      });
+
+      if (user?.uid) {
+        syncNotificationToCloud(user.uid, briefingNotif);
+      }
+
+      showToast({
+        title: 'Morning Briefing Ready',
+        message: result.briefing.headline || 'Your daily briefing is ready',
+        type: 'success',
+      });
+
+      return result.briefing;
+    }
+
+    return null;
+  }, [savingsAnalytics, user, showToast]);
+
+  const evaluateNotificationHeartbeat = useCallback(async () => {
+    const currentSettings = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
+    if (currentSettings.enabled === false && !currentSettings.inAppEnabled && !currentSettings.pushEnabled) {
+      return;
+    }
+
+    const now = new Date();
+    const currentDateKey = getTodayKey();
+    const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    const ctx: ReminderEvaluationContext = {
+      userId: user?.uid || 'local_user',
+      settings: currentSettings,
+      todos: todosRef.current || [],
+      tasks: todosRef.current || [],
+      habits: habitsRef.current || [],
+      habitCompletions: completionsRef.current || [],
+      goals: goalsRef.current || [],
+      customReminders: customRemindersRef.current || [],
+      existingNotifications: notificationsRef.current || [],
+      currentDateKey,
+      currentTimeStr,
+      currentDate: now,
+    };
+
+    const newReminders = evaluateAllReminders(ctx);
+    if (!newReminders || newReminders.length === 0) return;
+
+    setNotifications((prev) => {
+      const merged = [...newReminders, ...prev];
+      const pruned = pruneExpiredNotifications(merged, 30);
+      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(pruned));
+      return pruned;
+    });
+
+    if (user?.uid) {
+      newReminders.forEach((n) => syncNotificationToCloud(user.uid, n));
+    }
+
+    if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
+      playNotificationSound();
+    }
+
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        const topNotif = newReminders[0];
+        if (document.hidden && topNotif) {
+          new Notification(topNotif.title, {
+            body: topNotif.message,
+            icon: '/icon-192.png',
+            tag: topNotif.idempotencyKey || topNotif.deduplicationKey,
+          });
+        }
+      } catch {}
+    }
+  }, [user]);
+
+  useEffect(() => {
+    const initialTimer = setTimeout(() => {
+      evaluateNotificationHeartbeat();
+    }, 3000);
+
+    const interval = setInterval(() => {
+      evaluateNotificationHeartbeat();
+    }, 60000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        evaluateNotificationHeartbeat();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [evaluateNotificationHeartbeat]);
+
   const value: LifeOSContextType = {
     user,
     authLoading,
@@ -2921,6 +4093,20 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     cancelSleepSession,
     updateSleepSettings,
 
+    // Savings State & Operations
+    savingsGoals,
+    savingsTransactions,
+    savingsSettings,
+    savingsAnalytics,
+    createSavingsGoal,
+    updateSavingsGoal,
+    deleteSavingsGoal,
+    addSavingsTransaction,
+    updateSavingsTransaction,
+    deleteSavingsTransaction,
+    transferSavings,
+    updateSavingsSettings,
+
     todayProgress,
     selectedDateProgress,
     overallStreaks,
@@ -2935,6 +4121,25 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     showToast,
     removeToast,
     triggerCelebration,
+
+    // Notifications & Reminders
+    notifications,
+    unreadNotificationsCount,
+    customReminders,
+    notificationSettings,
+    aiBriefings,
+    markNotificationAsRead,
+    markAllNotificationsAsRead,
+    deleteNotification,
+    clearAllReadNotifications,
+    snoozeNotification,
+    dispatchNotification,
+    createReminder,
+    updateReminder,
+    deleteReminder,
+    updateNotificationSettings,
+    generateAIDailyBriefing,
+    evaluateNotificationHeartbeat,
   };
 
   return <LifeOSContext.Provider value={value}>{children}</LifeOSContext.Provider>;

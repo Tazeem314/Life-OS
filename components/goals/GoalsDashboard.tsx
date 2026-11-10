@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Goal, GoalStatus, GoalPriority } from '@/lib/types';
 import {
   calculatePlannedVsActual,
@@ -313,119 +314,129 @@ export function GoalsDashboard({
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredGoals.map((goal) => {
-            const analysis = calculatePlannedVsActual(goal);
-            const statusMeta = analysis.statusMeta;
-            const priorityMeta = PRIORITY_META[goal.priority || 'medium'];
-            const chapters = goal.chapters || [];
-            const completedChapters = chapters.filter((c) => c.completed).length;
+          <AnimatePresence initial={false}>
+            {filteredGoals.map((goal) => {
+              const analysis = calculatePlannedVsActual(goal);
+              const statusMeta = analysis.statusMeta;
+              const priorityMeta = PRIORITY_META[goal.priority || 'medium'];
+              const chapters = goal.chapters || [];
+              const completedChapters = chapters.filter((c) => c.completed).length;
 
-            return (
-              <div
-                key={goal.id}
-                onClick={() => onSelectGoal(goal)}
-                className="p-5 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 hover:border-sky-400 dark:hover:border-sky-600 transition cursor-pointer shadow-2xs flex flex-col justify-between gap-4 group"
-              >
-                {/* Top Row: Category, Status & Priority */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${statusMeta.bg} ${statusMeta.text}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${statusMeta.dot}`} />
-                        {statusMeta.label}
-                      </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${priorityMeta.badgeClass}`}>
-                        {priorityMeta.label}
+              return (
+                <motion.div
+                  key={goal.id}
+                  layout
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  whileHover={{ y: -3 }}
+                  transition={{ duration: 0.2 }}
+                  onClick={() => onSelectGoal(goal)}
+                  className="p-5 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 hover:border-sky-400 dark:hover:border-sky-600 transition cursor-pointer shadow-2xs flex flex-col justify-between gap-4 group"
+                >
+                  {/* Top Row: Category, Status & Priority */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${statusMeta.bg} ${statusMeta.text}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${statusMeta.dot}`} />
+                          {statusMeta.label}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${priorityMeta.badgeClass}`}>
+                          {priorityMeta.label}
+                        </span>
+                      </div>
+
+                      <span className="text-[11px] font-mono font-bold text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-md">
+                        {goal.category}
                       </span>
                     </div>
 
-                    <span className="text-[11px] font-mono font-bold text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-md">
-                      {goal.category}
-                    </span>
-                  </div>
-
-                  {/* Title and Why */}
-                  <div>
-                    <h3 className="text-base font-bold text-zinc-950 dark:text-zinc-50 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition">
-                      {goal.title}
-                    </h3>
-                    {goal.why && (
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1 italic">
-                        &quot;{goal.why}&quot;
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Planned vs Actual Badge (Section 20) */}
-                  <div className="p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200/60 dark:border-zinc-700/60 grid grid-cols-3 gap-1 text-center text-xs">
+                    {/* Title and Why */}
                     <div>
-                      <div className="text-[9px] uppercase font-bold text-zinc-400">Actual</div>
-                      <div className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
-                        {analysis.actualProgress}%
+                      <h3 className="text-base font-bold text-zinc-950 dark:text-zinc-50 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition">
+                        {goal.title}
+                      </h3>
+                      {goal.why && (
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1 italic">
+                          &quot;{goal.why}&quot;
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Planned vs Actual Badge (Section 20) */}
+                    <div className="p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200/60 dark:border-zinc-700/60 grid grid-cols-3 gap-1 text-center text-xs">
+                      <div>
+                        <div className="text-[9px] uppercase font-bold text-zinc-400">Actual</div>
+                        <div className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                          {analysis.actualProgress}%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[9px] uppercase font-bold text-zinc-400">Planned</div>
+                        <div className="font-mono font-bold text-zinc-600 dark:text-zinc-300">
+                          {analysis.plannedProgress}%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[9px] uppercase font-bold text-zinc-400">Variance</div>
+                        <div
+                          className={`font-mono font-bold ${
+                            analysis.difference >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        >
+                          {analysis.difference >= 0 ? `+${analysis.difference}%` : `${analysis.difference}%`}
+                        </div>
                       </div>
                     </div>
-                    <div>
-                      <div className="text-[9px] uppercase font-bold text-zinc-400">Planned</div>
-                      <div className="font-mono font-bold text-zinc-600 dark:text-zinc-300">
-                        {analysis.plannedProgress}%
+                  </div>
+
+                  {/* Progress Bar & Footer */}
+                  <div className="space-y-3 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-[11px] font-semibold text-zinc-500">
+                          {chapters.length > 0
+                            ? `${completedChapters} / ${chapters.length} Chapters`
+                            : goal.measurementType === 'quantity'
+                            ? `${goal.currentValue} / ${goal.targetValue} ${goal.unit || ''}`
+                            : `${(goal.milestones || []).length} Milestones`}
+                        </span>
+                        <span className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                          {analysis.actualProgress}%
+                        </span>
+                      </div>
+
+                      <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-2 rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${analysis.actualProgress}%` }}
+                          transition={{ duration: 0.6, ease: 'easeOut' }}
+                          className={`h-full rounded-full ${
+                            analysis.actualProgress >= 100
+                              ? 'bg-emerald-500'
+                              : analysis.status === 'at_risk' || analysis.status === 'behind'
+                              ? 'bg-amber-500'
+                              : 'bg-sky-500'
+                          }`}
+                        />
                       </div>
                     </div>
-                    <div>
-                      <div className="text-[9px] uppercase font-bold text-zinc-400">Variance</div>
-                      <div
-                        className={`font-mono font-bold ${
-                          analysis.difference >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                        }`}
-                      >
-                        {analysis.difference >= 0 ? `+${analysis.difference}%` : `${analysis.difference}%`}
-                      </div>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Progress Bar & Footer */}
-                <div className="space-y-3 pt-2 border-t border-zinc-100 dark:border-zinc-800">
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-[11px] font-semibold text-zinc-500">
-                        {chapters.length > 0
-                          ? `${completedChapters} / ${chapters.length} Chapters`
-                          : goal.measurementType === 'quantity'
-                          ? `${goal.currentValue} / ${goal.targetValue} ${goal.unit || ''}`
-                          : `${(goal.milestones || []).length} Milestones`}
+                    <div className="flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
+                      <span className="flex items-center gap-1 font-mono">
+                        <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                        {analysis.daysRemaining} days left
                       </span>
-                      <span className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
-                        {analysis.actualProgress}%
+                      <span className="font-bold text-sky-600 dark:text-sky-400 flex items-center gap-0.5">
+                        Open Roadmap <ChevronRight className="w-3.5 h-3.5" />
                       </span>
                     </div>
-
-                    <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-2 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          analysis.actualProgress >= 100
-                            ? 'bg-emerald-500'
-                            : analysis.status === 'at_risk' || analysis.status === 'behind'
-                            ? 'bg-amber-500'
-                            : 'bg-sky-500'
-                        }`}
-                        style={{ width: `${analysis.actualProgress}%` }}
-                      />
-                    </div>
                   </div>
-
-                  <div className="flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
-                    <span className="flex items-center gap-1 font-mono">
-                      <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                      {analysis.daysRemaining} days left
-                    </span>
-                    <span className="font-bold text-sky-600 dark:text-sky-400 flex items-center gap-0.5">
-                      Open Roadmap <ChevronRight className="w-3.5 h-3.5" />
-                    </span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
         </div>
       )}
     </div>

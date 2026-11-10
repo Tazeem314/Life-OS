@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Quote, Sparkles, Copy, Check, RefreshCw } from 'lucide-react';
 import { DailyQuote, getDailyQuoteForDate, getRandomQuoteExcept } from '@/lib/daily-quotes';
 
@@ -85,24 +86,34 @@ export function DailyQuoteCard({ todayKey }: DailyQuoteCardProps) {
         </div>
 
         {/* Quote body */}
-        <div className="relative pl-6 sm:pl-7">
+        <div className="relative pl-6 sm:pl-7 min-h-[48px]">
           <Quote className="absolute left-0 top-0.5 w-4 h-4 sm:w-5 sm:h-5 text-sky-400 dark:text-sky-500 opacity-60" />
-          <p className="text-xs sm:text-sm font-medium leading-relaxed text-zinc-800 dark:text-zinc-200 italic">
-            &ldquo;{currentQuote.quote}&rdquo;
-          </p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs">
-            <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-              — {currentQuote.author}
-            </span>
-            {currentQuote.title && (
-              <>
-                <span className="text-zinc-400 dark:text-zinc-500">·</span>
-                <span className="text-zinc-500 dark:text-zinc-400 text-[11px]">
-                  {currentQuote.title}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentQuote.id}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18 }}
+            >
+              <p className="text-xs sm:text-sm font-medium leading-relaxed text-zinc-800 dark:text-zinc-200 italic">
+                &ldquo;{currentQuote.quote}&rdquo;
+              </p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  — {currentQuote.author}
                 </span>
-              </>
-            )}
-          </div>
+                {currentQuote.title && (
+                  <>
+                    <span className="text-zinc-400 dark:text-zinc-500">·</span>
+                    <span className="text-zinc-500 dark:text-zinc-400 text-[11px]">
+                      {currentQuote.title}
+                    </span>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </AnimatePresence>
         </div>
       </div>
     </div>

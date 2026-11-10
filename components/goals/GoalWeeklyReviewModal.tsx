@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Goal, GoalWeeklyReview } from '@/lib/types';
 import {
   RotateCcw,
@@ -29,8 +30,6 @@ export function GoalWeeklyReviewModal({
   const [nextWeekFocus, setNextWeekFocus] = useState('');
   const [aiSummary, setAiSummary] = useState('');
   const [isLoadingAi, setIsLoadingAi] = useState(false);
-
-  if (!isOpen || !goal) return null;
 
   const plannedCount = 10;
   const completedCount = 8;
@@ -95,8 +94,23 @@ export function GoalWeeklyReviewModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-150">
-      <div className="relative w-full max-w-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
+    <AnimatePresence>
+      {isOpen && goal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 16 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 340 }}
+            className="relative w-full max-w-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col z-10"
+          >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/70 shrink-0">
           <div className="flex items-center gap-3">
@@ -221,7 +235,9 @@ export function GoalWeeklyReviewModal({
             </button>
           </div>
         </form>
-      </div>
+      </motion.div>
     </div>
+  )}
+</AnimatePresence>
   );
 }

@@ -23,8 +23,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'Life OS — Habit, Goal & Sleep Manager',
-  description: 'Modern Habit, Daily To-Do, Goal Roadmap, and Sleep & Circadian Tracker for daily planning, progress, and streak tracking.',
+  title: 'Life OS',
+  description: 'Modern Habit, Daily To-Do, Goal Roadmap, Savings & Wealth Command Center, and Sleep & Circadian Tracker for daily planning, progress, and financial growth.',
   applicationName: 'LifeOS',
   appleWebApp: {
     capable: true,
@@ -45,14 +45,14 @@ export const metadata: Metadata = {
   },
   manifest: '/manifest.webmanifest',
   openGraph: {
-    title: 'Life OS — Habit & Daily To-Do Manager',
-    description: 'Modern Habit and Daily To-Do Manager for daily planning, progress, and streak tracking.',
+    title: 'Life OS',
+    description: 'Modern Habit, Daily To-Do, Goal Roadmap, Savings & Wealth Command Center, and Sleep & Circadian Tracker for daily planning, progress, and financial growth.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Life OS — Habit & Daily To-Do Manager',
-    description: 'Modern Habit and Daily To-Do Manager for daily planning, progress, and streak tracking.',
+    title: 'Life OS',
+    description: 'Modern Habit, Daily To-Do, Goal Roadmap, Savings & Wealth Command Center, and Sleep & Circadian Tracker for daily planning, progress, and financial growth.',
   },
 };
 

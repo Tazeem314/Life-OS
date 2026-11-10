@@ -38,17 +38,19 @@ export function HabitDetailAnalyticsModal({
   const { completions } = useLifeOS();
   const [selectedRange, setSelectedRange] = useState<TimeRangeOption>('30d');
 
-  if (!isOpen || !habit) return null;
-
   const dateRange = getDateRangeFromOption(selectedRange);
-  const analytics = calculateHabitAnalytics(
-    habit,
-    dateRange.startDate,
-    dateRange.endDate,
-    completions
-  );
+  const analytics = habit
+    ? calculateHabitAnalytics(
+        habit,
+        dateRange.startDate,
+        dateRange.endDate,
+        completions
+      )
+    : null;
 
-  const IconComp = HABIT_ICONS.find((i) => i.name === habit.icon)?.Icon || CheckCircle2;
+  const IconComp = habit
+    ? HABIT_ICONS.find((i) => i.name === habit.icon)?.Icon || CheckCircle2
+    : CheckCircle2;
 
   const rangeOptions: { id: TimeRangeOption; label: string }[] = [
     { id: '7d', label: '7D' },
@@ -60,14 +62,22 @@ export function HabitDetailAnalyticsModal({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 12 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 12 }}
-          transition={{ duration: 0.18 }}
-          className="w-full max-w-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-6 sm:p-7 shadow-2xl relative my-8"
-        >
+      {isOpen && habit && analytics && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 16 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 340 }}
+            className="w-full max-w-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl relative my-auto max-h-[90vh] overflow-y-auto no-scrollbar z-10"
+          >
           {/* Header */}
           <div className="flex items-start justify-between pb-4 border-b border-zinc-100 dark:border-zinc-800">
             <div className="flex items-center gap-3.5">
@@ -321,6 +331,7 @@ export function HabitDetailAnalyticsModal({
           </div>
         </motion.div>
       </div>
+      )}
     </AnimatePresence>
   );
 }

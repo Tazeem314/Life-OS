@@ -1,6 +1,6 @@
 {
   "name": "Life OS",
-  "description": "Modern Habit, Daily To-Do, Goal Roadmap, and Sleep & Circadian Tracker for daily planning, progress, and streak tracking.",
+  "description": "Modern Habit, Daily To-Do, Goal Roadmap, Savings & Wealth Command Center, and Sleep & Circadian Tracker for daily planning, progress, and financial growth.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

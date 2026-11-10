@@ -151,8 +151,14 @@ export function HabitsView({
               const IconComp = HABIT_ICONS.find((i) => i.name === habit.icon)?.Icon || Sparkles;
 
               return (
-                <div
+                <motion.div
                   key={habit.id}
+                  layout
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.2 }}
+                  whileHover={{ y: -2 }}
                   className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${
                     isPaused
                       ? 'bg-zinc-50/50 dark:bg-zinc-900/40 border-zinc-200/50 dark:border-zinc-800/40 opacity-70'
@@ -297,7 +303,7 @@ export function HabitsView({
                     </button>
                   </div>
                 </div>
-              </div>
+                </motion.div>
             );
           })}
           </AnimatePresence>

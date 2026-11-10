@@ -13,7 +13,8 @@ import {
   where,
   User,
 } from './firebase';
-import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
+import { NotificationRecord, ReminderDefinition, NotificationSettings, PushSubscriptionRecord, AIDailyBriefing } from './notification-types';
 
 export enum OperationType {
   CREATE = 'create',
@@ -86,6 +87,11 @@ export interface PendingWrite {
     | 'goal_delete'
     | 'sleep'
     | 'sleep_delete'
+    | 'savings_goal'
+    | 'savings_goal_delete'
+    | 'savings_transaction'
+    | 'savings_transaction_delete'
+    | 'savings_settings'
     | 'settings';
   data?: any;
   id?: string;
@@ -189,6 +195,21 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
             break;
           case 'sleep_delete':
             if (item.id) await deleteSleepLogFromCloud(userId, item.id, false);
+            break;
+          case 'savings_goal':
+            if (item.data) await syncSavingsGoalToCloud(userId, item.data, false);
+            break;
+          case 'savings_goal_delete':
+            if (item.id) await deleteSavingsGoalFromCloud(userId, item.id, false);
+            break;
+          case 'savings_transaction':
+            if (item.data) await syncSavingsTransactionToCloud(userId, item.data, false);
+            break;
+          case 'savings_transaction_delete':
+            if (item.id) await deleteSavingsTransactionFromCloud(userId, item.id, false);
+            break;
+          case 'savings_settings':
+            if (item.data) await syncSavingsSettingsToCloud(userId, item.data, false);
             break;
           case 'settings':
             if (item.data) await syncSettingsToCloud(userId, item.data, false);
@@ -470,6 +491,177 @@ export async function syncSettingsToCloud(userId: string, settings: UserSettings
   }
 }
 
+export async function syncSavingsGoalToCloud(userId: string, goal: SavingsGoal, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'savings_goal', data: goal, timestamp: Date.now() });
+  }
+  try {
+    const goalRef = doc(db, 'users', userId, 'savingsGoals', goal.id);
+    await setDoc(goalRef, cleanForFirestore(goal), { merge: true });
+    clearCloudDeletion(userId, goal.id).catch(() => {});
+    if (shouldQueue) {
+      removePendingWrite('savings_goal', goal.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/savingsGoals/${goal.id}`);
+  }
+}
+
+export async function deleteSavingsGoalFromCloud(userId: string, goalId: string, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'savings_goal_delete', id: goalId, timestamp: Date.now() });
+  }
+  try {
+    const goalRef = doc(db, 'users', userId, 'savingsGoals', goalId);
+    const delRef = doc(db, 'users', userId, 'deletions', goalId);
+    const batch = writeBatch(db);
+    batch.delete(goalRef);
+    batch.set(delRef, { id: goalId, type: 'savings_goal', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+    if (shouldQueue) {
+      removePendingWrite('savings_goal_delete', goalId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/savingsGoals/${goalId}`);
+  }
+}
+
+export async function syncSavingsTransactionToCloud(userId: string, transaction: SavingsTransaction, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'savings_transaction', data: transaction, timestamp: Date.now() });
+  }
+  try {
+    const txRef = doc(db, 'users', userId, 'savingsTransactions', transaction.id);
+    await setDoc(txRef, cleanForFirestore(transaction), { merge: true });
+    clearCloudDeletion(userId, transaction.id).catch(() => {});
+    if (shouldQueue) {
+      removePendingWrite('savings_transaction', transaction.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/savingsTransactions/${transaction.id}`);
+  }
+}
+
+export async function deleteSavingsTransactionFromCloud(userId: string, transactionId: string, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'savings_transaction_delete', id: transactionId, timestamp: Date.now() });
+  }
+  try {
+    const txRef = doc(db, 'users', userId, 'savingsTransactions', transactionId);
+    const delRef = doc(db, 'users', userId, 'deletions', transactionId);
+    const batch = writeBatch(db);
+    batch.delete(txRef);
+    batch.set(delRef, { id: transactionId, type: 'savings_transaction', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+    if (shouldQueue) {
+      removePendingWrite('savings_transaction_delete', transactionId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/savingsTransactions/${transactionId}`);
+  }
+}
+
+export async function syncSavingsSettingsToCloud(userId: string, settings: SavingsSettings, shouldQueue = true): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'savings_settings', data: settings, timestamp: Date.now() });
+  }
+  try {
+    const settingsRef = doc(db, 'users', userId, 'savingsSettings', 'settings');
+    await setDoc(settingsRef, cleanForFirestore(settings), { merge: true });
+    if (shouldQueue) {
+      removePendingWrite('savings_settings', 'savings_settings');
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/savingsSettings/settings`);
+  }
+}
+
+export async function syncNotificationToCloud(userId: string, notification: NotificationRecord): Promise<void> {
+  try {
+    const notifRef = doc(db, 'users', userId, 'notifications', notification.id);
+    await setDoc(notifRef, cleanForFirestore(notification), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notifications/${notification.id}`);
+  }
+}
+
+export async function deleteNotificationFromCloud(userId: string, notificationId: string): Promise<void> {
+  try {
+    const notifRef = doc(db, 'users', userId, 'notifications', notificationId);
+    await deleteDoc(notifRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications/${notificationId}`);
+  }
+}
+
+export async function markAllNotificationsReadInCloud(userId: string, notificationIds: string[]): Promise<void> {
+  try {
+    const batch = writeBatch(db);
+    const nowIso = new Date().toISOString();
+    notificationIds.forEach((id) => {
+      const ref = doc(db, 'users', userId, 'notifications', id);
+      batch.update(ref, { read: true, readAt: nowIso });
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notifications`);
+  }
+}
+
+export async function syncReminderToCloud(userId: string, reminder: ReminderDefinition): Promise<void> {
+  try {
+    const remRef = doc(db, 'users', userId, 'reminders', reminder.id);
+    await setDoc(remRef, cleanForFirestore(reminder), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/reminders/${reminder.id}`);
+  }
+}
+
+export async function deleteReminderFromCloud(userId: string, reminderId: string): Promise<void> {
+  try {
+    const remRef = doc(db, 'users', userId, 'reminders', reminderId);
+    await deleteDoc(remRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/reminders/${reminderId}`);
+  }
+}
+
+export async function syncNotificationSettingsToCloud(userId: string, settings: NotificationSettings): Promise<void> {
+  try {
+    const settingsRef = doc(db, 'users', userId, 'notificationSettings', 'settings');
+    await setDoc(settingsRef, cleanForFirestore(settings), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notificationSettings/settings`);
+  }
+}
+
+export async function syncPushSubscriptionToCloud(userId: string, subscription: PushSubscriptionRecord): Promise<void> {
+  try {
+    const subRef = doc(db, 'users', userId, 'pushSubscriptions', subscription.id);
+    await setDoc(subRef, cleanForFirestore(subscription), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/pushSubscriptions/${subscription.id}`);
+  }
+}
+
+export async function deletePushSubscriptionFromCloud(userId: string, subscriptionId: string): Promise<void> {
+  try {
+    const subRef = doc(db, 'users', userId, 'pushSubscriptions', subscriptionId);
+    await deleteDoc(subRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/pushSubscriptions/${subscriptionId}`);
+  }
+}
+
+export async function syncAIBriefingToCloud(userId: string, briefing: AIDailyBriefing): Promise<void> {
+  try {
+    const brRef = doc(db, 'users', userId, 'aiBriefings', briefing.id);
+    await setDoc(brRef, cleanForFirestore(briefing), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/aiBriefings/${briefing.id}`);
+  }
+}
+
 export async function uploadInitialDataToCloud(
   userId: string,
   habits: Habit[],
@@ -477,7 +669,10 @@ export async function uploadInitialDataToCloud(
   todos: Todo[],
   settings: UserSettings,
   goals: Goal[] = [],
-  sleepLogs: SleepLog[] = []
+  sleepLogs: SleepLog[] = [],
+  savingsGoals: SavingsGoal[] = [],
+  savingsTransactions: SavingsTransaction[] = [],
+  savingsSettings?: SavingsSettings
 ): Promise<boolean> {
   try {
     const batch = writeBatch(db);
@@ -506,6 +701,21 @@ export async function uploadInitialDataToCloud(
       const ref = doc(db, 'users', userId, 'sleepLogs', s.id);
       batch.set(ref, cleanForFirestore(s), { merge: true });
     });
+
+    savingsGoals.forEach((sg) => {
+      const ref = doc(db, 'users', userId, 'savingsGoals', sg.id);
+      batch.set(ref, cleanForFirestore(sg), { merge: true });
+    });
+
+    savingsTransactions.forEach((st) => {
+      const ref = doc(db, 'users', userId, 'savingsTransactions', st.id);
+      batch.set(ref, cleanForFirestore(st), { merge: true });
+    });
+
+    if (savingsSettings) {
+      const savSettingsRef = doc(db, 'users', userId, 'savingsSettings', 'settings');
+      batch.set(savSettingsRef, cleanForFirestore(savingsSettings), { merge: true });
+    }
 
     const settingsRef = doc(db, 'users', userId, 'settings', 'user_settings');
     batch.set(settingsRef, cleanForFirestore(settings), { merge: true });
@@ -636,6 +846,9 @@ export interface CloudDataResult {
   todos: Todo[] | null;
   goals: Goal[] | null;
   sleepLogs: SleepLog[] | null;
+  savingsGoals: SavingsGoal[] | null;
+  savingsTransactions: SavingsTransaction[] | null;
+  savingsSettings: SavingsSettings | null;
   settings: UserSettings | null;
   deletions: Map<string, string>;
 }
@@ -646,12 +859,15 @@ export interface CloudDataResult {
 export async function fetchAllCloudData(userId: string): Promise<CloudDataResult | null> {
   if (!userId) return null;
   try {
-    const [habitsRes, compRes, todosRes, goalsRes, sleepRes, settingsRes, delRes] = await Promise.allSettled([
+    const [habitsRes, compRes, todosRes, goalsRes, sleepRes, savingsGoalsRes, savingsTxRes, savingsSettingsRes, settingsRes, delRes] = await Promise.allSettled([
       getDocs(collection(db, 'users', userId, 'habits')),
       getDocs(collection(db, 'users', userId, 'habitCompletions')),
       getDocs(collection(db, 'users', userId, 'todos')),
       getDocs(collection(db, 'users', userId, 'goals')),
       getDocs(collection(db, 'users', userId, 'sleepLogs')),
+      getDocs(collection(db, 'users', userId, 'savingsGoals')),
+      getDocs(collection(db, 'users', userId, 'savingsTransactions')),
+      getDoc(doc(db, 'users', userId, 'savingsSettings', 'settings')),
       getDoc(doc(db, 'users', userId, 'settings', 'user_settings')),
       getDocs(collection(db, 'users', userId, 'deletions')),
     ]);
@@ -681,6 +897,21 @@ export async function fetchAllCloudData(userId: string): Promise<CloudDataResult
         ? sleepRes.value.docs.map((d) => d.data() as SleepLog).sort((a, b) => b.date.localeCompare(a.date))
         : null;
 
+    const savingsGoals: SavingsGoal[] | null =
+      savingsGoalsRes.status === 'fulfilled'
+        ? savingsGoalsRes.value.docs.map((d) => d.data() as SavingsGoal)
+        : null;
+
+    const savingsTransactions: SavingsTransaction[] | null =
+      savingsTxRes.status === 'fulfilled'
+        ? savingsTxRes.value.docs.map((d) => d.data() as SavingsTransaction).sort((a, b) => b.date.localeCompare(a.date))
+        : null;
+
+    let savingsSettings: SavingsSettings | null = null;
+    if (savingsSettingsRes.status === 'fulfilled' && savingsSettingsRes.value.exists()) {
+      savingsSettings = savingsSettingsRes.value.data() as SavingsSettings;
+    }
+
     let settings: UserSettings | null = null;
     if (settingsRes.status === 'fulfilled' && settingsRes.value.exists()) {
       settings = settingsRes.value.data() as UserSettings;
@@ -696,7 +927,7 @@ export async function fetchAllCloudData(userId: string): Promise<CloudDataResult
       });
     }
 
-    return { habits, completions, todos, goals, sleepLogs, settings, deletions };
+    return { habits, completions, todos, goals, sleepLogs, savingsGoals, savingsTransactions, savingsSettings, settings, deletions };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
     return null;
@@ -743,6 +974,13 @@ export function subscribeToUserCloudData(
     onTodos: (todos: Todo[], meta?: CloudSnapshotMeta) => void;
     onGoals?: (goals: Goal[], meta?: CloudSnapshotMeta) => void;
     onSleepLogs?: (sleepLogs: SleepLog[], meta?: CloudSnapshotMeta) => void;
+    onSavingsGoals?: (savingsGoals: SavingsGoal[], meta?: CloudSnapshotMeta) => void;
+    onSavingsTransactions?: (savingsTransactions: SavingsTransaction[], meta?: CloudSnapshotMeta) => void;
+    onSavingsSettings?: (savingsSettings: SavingsSettings, meta?: CloudSnapshotMeta) => void;
+    onNotifications?: (notifications: NotificationRecord[]) => void;
+    onReminders?: (reminders: ReminderDefinition[]) => void;
+    onNotificationSettings?: (settings: NotificationSettings) => void;
+    onAIBriefings?: (briefings: AIDailyBriefing[]) => void;
     onSettings: (settings: UserSettings, meta?: CloudSnapshotMeta) => void;
     onDeletions?: (deletions: Map<string, string>) => void;
   }
@@ -861,6 +1099,56 @@ export function subscribeToUserCloudData(
       );
       activeUnsubs.push(unsubSleepLogs);
 
+      const unsubSavingsGoals = onSnapshot(
+        collection(db, 'users', userId, 'savingsGoals'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: SavingsGoal[] = [];
+          snap.forEach((d) => list.push(d.data() as SavingsGoal));
+          if (handlers.onSavingsGoals) {
+            handlers.onSavingsGoals(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/savingsGoals`)
+      );
+      activeUnsubs.push(unsubSavingsGoals);
+
+      const unsubSavingsTx = onSnapshot(
+        collection(db, 'users', userId, 'savingsTransactions'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: SavingsTransaction[] = [];
+          snap.forEach((d) => list.push(d.data() as SavingsTransaction));
+          list.sort((a, b) => b.date.localeCompare(a.date));
+          if (handlers.onSavingsTransactions) {
+            handlers.onSavingsTransactions(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/savingsTransactions`)
+      );
+      activeUnsubs.push(unsubSavingsTx);
+
+      const unsubSavingsSettings = onSnapshot(
+        doc(db, 'users', userId, 'savingsSettings', 'settings'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          if (snap.exists() && handlers.onSavingsSettings) {
+            handlers.onSavingsSettings(snap.data() as SavingsSettings, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        handleListenerError(OperationType.GET, `users/${userId}/savingsSettings/settings`)
+      );
+      activeUnsubs.push(unsubSavingsSettings);
+
       const unsubSettings = onSnapshot(
         doc(db, 'users', userId, 'settings', 'user_settings'),
         (snap) => {
@@ -875,6 +1163,62 @@ export function subscribeToUserCloudData(
         handleListenerError(OperationType.GET, `users/${userId}/settings/user_settings`)
       );
       activeUnsubs.push(unsubSettings);
+
+      const unsubNotifications = onSnapshot(
+        collection(db, 'users', userId, 'notifications'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: NotificationRecord[] = [];
+          snap.forEach((d) => list.push(d.data() as NotificationRecord));
+          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          if (handlers.onNotifications) {
+            handlers.onNotifications(list);
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/notifications`)
+      );
+      activeUnsubs.push(unsubNotifications);
+
+      const unsubReminders = onSnapshot(
+        collection(db, 'users', userId, 'reminders'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: ReminderDefinition[] = [];
+          snap.forEach((d) => list.push(d.data() as ReminderDefinition));
+          if (handlers.onReminders) {
+            handlers.onReminders(list);
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/reminders`)
+      );
+      activeUnsubs.push(unsubReminders);
+
+      const unsubNotificationSettings = onSnapshot(
+        doc(db, 'users', userId, 'notificationSettings', 'settings'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          if (snap.exists() && handlers.onNotificationSettings) {
+            handlers.onNotificationSettings(snap.data() as NotificationSettings);
+          }
+        },
+        handleListenerError(OperationType.GET, `users/${userId}/notificationSettings/settings`)
+      );
+      activeUnsubs.push(unsubNotificationSettings);
+
+      const unsubAIBriefings = onSnapshot(
+        collection(db, 'users', userId, 'aiBriefings'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          const list: AIDailyBriefing[] = [];
+          snap.forEach((d) => list.push(d.data() as AIDailyBriefing));
+          list.sort((a, b) => (b.dateKey || b.date || '').localeCompare(a.dateKey || a.date || ''));
+          if (handlers.onAIBriefings) {
+            handlers.onAIBriefings(list);
+          }
+        },
+        handleListenerError(OperationType.LIST, `users/${userId}/aiBriefings`)
+      );
+      activeUnsubs.push(unsubAIBriefings);
 
       const unsubDeletions = onSnapshot(
         collection(db, 'users', userId, 'deletions'),

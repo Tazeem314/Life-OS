@@ -15,6 +15,8 @@ import {
   Settings,
   Cloud,
   X,
+  PiggyBank,
+  Bell,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -37,7 +39,9 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
     todayProgress,
     habits,
     goals,
+    savingsGoals,
     sleepAnalytics,
+    unreadNotificationsCount,
     user,
     loginWithGoogle,
     isOnline,
@@ -96,6 +100,14 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
         undefined,
     },
     {
+      id: 'savings',
+      label: 'Savings',
+      icon: PiggyBank,
+      badge:
+        (savingsGoals || []).filter((g) => g.status === 'active').length ||
+        undefined,
+    },
+    {
       id: 'sleep',
       label: 'Sleep Tracker',
       icon: Moon,
@@ -103,6 +115,12 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
         sleepAnalytics && sleepAnalytics.currentStreakDays > 0
           ? `${sleepAnalytics.currentStreakDays}d streak`
           : undefined,
+    },
+    {
+      id: 'notifications',
+      label: 'Notifications',
+      icon: Bell,
+      badge: unreadNotificationsCount > 0 ? unreadNotificationsCount : undefined,
     },
     {
       id: 'calendar',
@@ -185,7 +203,7 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
                   <button
                     key={item.id}
                     onClick={() => handleSelectTab(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                    className={`w-full flex items-center justify-between px-3.5 py-2.5 min-h-[44px] rounded-xl text-xs font-medium transition-all cursor-pointer touch-manipulation ${
                       isActive
                         ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-800/60 shadow-2xs font-semibold'
                         : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100'
@@ -193,13 +211,13 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
                   >
                     <div className="flex items-center gap-3">
                       <Icon
-                        className={`w-4 h-4 ${
+                        className={`w-4 h-4 shrink-0 ${
                           isActive
                             ? 'text-sky-600 dark:text-sky-400'
                             : 'text-zinc-400 dark:text-zinc-500'
                         }`}
                       />
-                      <span>{item.label}</span>
+                      <span className="truncate">{item.label}</span>
                     </div>
                     {item.badge !== undefined && (
                       <span
@@ -231,9 +249,11 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
                   </span>
                 </div>
                 <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-sky-500 rounded-full transition-all duration-300"
-                    style={{ width: `${todayProgress.percentage}%` }}
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${todayProgress.percentage}%` }}
+                    transition={{ duration: 0.5, ease: 'easeOut' }}
+                    className="h-full bg-sky-500 rounded-full"
                   />
                 </div>
                 <div

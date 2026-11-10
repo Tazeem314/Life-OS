@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import { PWAInstallButton } from '@/components/PWAInstallButton';
+import { NotificationSettingsView } from '@/components/notifications/NotificationSettingsView';
 
 interface SettingsViewProps {
   onConfirmReset?: () => void;
@@ -335,36 +336,8 @@ export function SettingsView({ onConfirmReset, onConfirmClear }: SettingsViewPro
         </div>
       </div>
 
-      {/* 3. Preferences */}
-      <div className="p-6 bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs space-y-4">
-        <h2 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-          Preferences
-        </h2>
-
-        {/* Notification Reminders Toggle */}
-        <div className="flex items-center justify-between py-2">
-          <div className="space-y-0.5">
-            <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-              <Bell className="w-4 h-4 text-indigo-500" />
-              Daily Habit Reminders (Browser Alerts)
-            </span>
-            <p className="text-xs text-zinc-400">
-              Receive on-screen alerts when habit reminder times arrive
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              updateSettings({ reminderNotifications: !settings.reminderNotifications })
-            }
-            className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
-              settings.reminderNotifications ? 'bg-sky-600 justify-end' : 'bg-zinc-300 dark:bg-zinc-700 justify-start'
-            }`}
-          >
-            <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
-          </button>
-        </div>
-      </div>
+      {/* 3. Notifications, Push & Quiet Hours */}
+      <NotificationSettingsView />
 
       {/* 4. Backup & Data Management */}
       <div className="p-6 bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs space-y-4">

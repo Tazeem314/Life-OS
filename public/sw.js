@@ -59,6 +59,59 @@ self.addEventListener('message', (event) => {
   }
 });
 
+// Real Web Push Event Handler
+self.addEventListener('push', (event) => {
+  let data = {};
+  if (event.data) {
+    try {
+      data = event.data.json();
+    } catch {
+      data = { title: 'Life OS Notification', message: event.data.text() };
+    }
+  }
+
+  const title = data.title || 'Life OS Reminder';
+  const options = {
+    body: data.message || 'You have a new update in Life OS.',
+    icon: '/pwa-192x192.png',
+    badge: '/icon.svg',
+    tag: data.id || ('lifeos_' + Date.now()),
+    data: {
+      url: data.deepLink || '/',
+      id: data.id,
+      category: data.category,
+    },
+    requireInteraction: data.priority === 'urgent' || data.priority === 'high',
+    vibrate: [100, 50, 100],
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Notification Click Handler: Focus existing tab or open deep link
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.url || '/';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // If a window is already open, focus and navigate it
+      for (const client of clientList) {
+        if (client.url && client.url.includes(self.location.origin) && 'focus' in client) {
+          if ('navigate' in client && targetUrl !== '/') {
+            client.navigate(targetUrl).catch(() => {});
+          }
+          return client.focus();
+        }
+      }
+      // Otherwise open new window
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+    })
+  );
+});
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);

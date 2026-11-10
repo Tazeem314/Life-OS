@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { motion } from 'motion/react';
 import Image from 'next/image';
 import { useLifeOS } from '@/context/LifeOSContext';
 import { ActiveTab } from '@/lib/types';
@@ -14,6 +15,8 @@ import {
   TrendingUp,
   Settings,
   Cloud,
+  PiggyBank,
+  Bell,
 } from 'lucide-react';
 
 interface NavItem {
@@ -24,7 +27,19 @@ interface NavItem {
 }
 
 export function Sidebar() {
-  const { activeTab, setActiveTab, todayProgress, habits, goals, sleepAnalytics, user, loginWithGoogle, isOnline } = useLifeOS();
+  const {
+    activeTab,
+    setActiveTab,
+    todayProgress,
+    habits,
+    goals,
+    savingsGoals,
+    sleepAnalytics,
+    unreadNotificationsCount,
+    user,
+    loginWithGoogle,
+    isOnline,
+  } = useLifeOS();
 
   const navItems: NavItem[] = [
     {
@@ -54,10 +69,22 @@ export function Sidebar() {
       badge: (goals || []).filter((g) => g.status !== 'completed' && g.status !== 'archived').length || undefined,
     },
     {
+      id: 'savings',
+      label: 'Savings',
+      icon: PiggyBank,
+      badge: (savingsGoals || []).filter((g) => g.status === 'active').length || undefined,
+    },
+    {
       id: 'sleep',
       label: 'Sleep Tracker',
       icon: Moon,
       badge: sleepAnalytics.currentStreakDays > 0 ? `${sleepAnalytics.currentStreakDays}d streak` : undefined,
+    },
+    {
+      id: 'notifications',
+      label: 'Notifications',
+      icon: Bell,
+      badge: unreadNotificationsCount > 0 ? unreadNotificationsCount : undefined,
     },
     {
       id: 'calendar',
@@ -119,9 +146,11 @@ export function Sidebar() {
           <span suppressHydrationWarning className="font-mono font-bold tabular-nums text-zinc-900 dark:text-zinc-100">{todayProgress.percentage}%</span>
         </div>
         <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-1.5 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-sky-500 rounded-full transition-all duration-300"
-            style={{ width: `${todayProgress.percentage}%` }}
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${todayProgress.percentage}%` }}
+            transition={{ duration: 0.5, ease: 'easeOut' }}
+            className="h-full bg-sky-500 rounded-full"
           />
         </div>
         <div suppressHydrationWarning className="flex justify-between items-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-mono tabular-nums">

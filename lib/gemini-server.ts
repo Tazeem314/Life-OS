@@ -5,9 +5,9 @@ const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 // Fast, highly available flash models supported by @google/genai
 const MODELS_SEQUENCE = [
-  'gemini-3.1-flash-lite',
-  'gemini-flash-latest',
   'gemini-3.8-flash',
+  'gemini-flash-latest',
+  'gemini-3.1-flash-lite',
 ];
 
 interface GenerateOptions {

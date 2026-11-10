@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { AuthButton } from '@/components/AuthButton';
 import { PWAInstallButton } from '@/components/PWAInstallButton';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
 
 interface NavbarProps {
   onOpenNewHabit?: () => void;
@@ -130,6 +131,9 @@ export function Navbar({
 
           {/* Install App Button */}
           <PWAInstallButton variant="navbar" />
+
+          {/* Notification Bell */}
+          <NotificationBell />
 
           {/* Theme switcher */}
           <button

@@ -1,5 +1,6 @@
-import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, ActiveSleepSession } from './types';
+import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, ActiveSleepSession, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
 import { getInitialSeedSleepLogs, DEFAULT_SLEEP_SETTINGS } from './sleep-service';
+import { DEFAULT_SAVINGS_SETTINGS } from './savings-service';
 
 const HABITS_STORAGE_KEY = 'life_os_habits_v1';
 const COMPLETIONS_STORAGE_KEY = 'life_os_completions_v1';
@@ -8,6 +9,9 @@ const GOALS_STORAGE_KEY = 'life_os_goals_v1';
 const SETTINGS_STORAGE_KEY = 'life_os_settings_v1';
 const SLEEP_LOGS_STORAGE_KEY = 'life_os_sleep_logs_v1';
 const ACTIVE_SLEEP_SESSION_KEY = 'life_os_active_sleep_session_v1';
+const SAVINGS_GOALS_STORAGE_KEY = 'life_os_savings_goals_v1';
+const SAVINGS_TRANSACTIONS_STORAGE_KEY = 'life_os_savings_transactions_v1';
+const SAVINGS_SETTINGS_STORAGE_KEY = 'life_os_savings_settings_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
 const CACHED_USER_KEY = 'life_os_cached_uid';
 const DELETED_IDS_KEY = 'lifeos_deleted_ids_v1';
@@ -184,6 +188,78 @@ export const Storage = {
     }
   },
 
+  getSavingsGoals(): SavingsGoal[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      this.initSeedDataIfEmpty();
+      const data = localStorage.getItem(SAVINGS_GOALS_STORAGE_KEY);
+      if (data === null) return [];
+      const parsed: SavingsGoal[] = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveSavingsGoals(goals: SavingsGoal[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(SAVINGS_GOALS_STORAGE_KEY, JSON.stringify(goals));
+      localStorage.setItem(INITIALIZED_KEY, 'true');
+    } catch (e) {
+      console.error('Failed to save savings goals to localStorage', e);
+    }
+  },
+
+  getSavingsTransactions(): SavingsTransaction[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      this.initSeedDataIfEmpty();
+      const data = localStorage.getItem(SAVINGS_TRANSACTIONS_STORAGE_KEY);
+      if (data === null) return [];
+      const parsed: SavingsTransaction[] = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveSavingsTransactions(transactions: SavingsTransaction[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(SAVINGS_TRANSACTIONS_STORAGE_KEY, JSON.stringify(transactions));
+      localStorage.setItem(INITIALIZED_KEY, 'true');
+    } catch (e) {
+      console.error('Failed to save savings transactions to localStorage', e);
+    }
+  },
+
+  getSavingsSettings(): SavingsSettings {
+    if (typeof window === 'undefined') return DEFAULT_SAVINGS_SETTINGS;
+    try {
+      this.initSeedDataIfEmpty();
+      const data = localStorage.getItem(SAVINGS_SETTINGS_STORAGE_KEY);
+      if (!data) return DEFAULT_SAVINGS_SETTINGS;
+      const parsed = JSON.parse(data);
+      return {
+        ...DEFAULT_SAVINGS_SETTINGS,
+        ...(parsed || {}),
+      };
+    } catch {
+      return DEFAULT_SAVINGS_SETTINGS;
+    }
+  },
+
+  saveSavingsSettings(settings: SavingsSettings): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(SAVINGS_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      localStorage.setItem(INITIALIZED_KEY, 'true');
+    } catch (e) {
+      console.error('Failed to save savings settings to localStorage', e);
+    }
+  },
+
   getSleepLogs(): SleepLog[] {
     if (typeof window === 'undefined') return [];
     try {
@@ -260,6 +336,9 @@ export const Storage = {
     localStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(SLEEP_LOGS_STORAGE_KEY, JSON.stringify([]));
     localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
+    localStorage.setItem(SAVINGS_GOALS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.setItem(SAVINGS_TRANSACTIONS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.setItem(SAVINGS_SETTINGS_STORAGE_KEY, JSON.stringify(DEFAULT_SAVINGS_SETTINGS));
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(INITIAL_SETTINGS));
     localStorage.setItem(INITIALIZED_KEY, 'true');
   },
@@ -288,13 +367,16 @@ export const Storage = {
   exportBackupJson(): string {
     return JSON.stringify(
       {
-        version: '2.1',
+        version: '2.2',
         exportedAt: new Date().toISOString(),
         habits: this.getHabits(),
         completions: this.getCompletions(),
         todos: this.getTodos(),
         goals: this.getGoals(),
         sleepLogs: this.getSleepLogs(),
+        savingsGoals: this.getSavingsGoals(),
+        savingsTransactions: this.getSavingsTransactions(),
+        savingsSettings: this.getSavingsSettings(),
         settings: this.getSettings(),
       },
       null,
@@ -314,6 +396,15 @@ export const Storage = {
         }
         if (Array.isArray(parsed.sleepLogs)) {
           this.saveSleepLogs(parsed.sleepLogs);
+        }
+        if (Array.isArray(parsed.savingsGoals)) {
+          this.saveSavingsGoals(parsed.savingsGoals);
+        }
+        if (Array.isArray(parsed.savingsTransactions)) {
+          this.saveSavingsTransactions(parsed.savingsTransactions);
+        }
+        if (parsed.savingsSettings) {
+          this.saveSavingsSettings(parsed.savingsSettings);
         }
         if (parsed.settings) {
           this.saveSettings(parsed.settings);
@@ -395,6 +486,9 @@ export const Storage = {
       localStorage.removeItem(SETTINGS_STORAGE_KEY);
       localStorage.removeItem(SLEEP_LOGS_STORAGE_KEY);
       localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
+      localStorage.removeItem(SAVINGS_GOALS_STORAGE_KEY);
+      localStorage.removeItem(SAVINGS_TRANSACTIONS_STORAGE_KEY);
+      localStorage.removeItem(SAVINGS_SETTINGS_STORAGE_KEY);
       localStorage.removeItem(DELETED_IDS_KEY);
     } catch {}
   },

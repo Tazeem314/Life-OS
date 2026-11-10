@@ -39,6 +39,38 @@ service cloud.firestore {
       match /settings/{settingsId} {
         allow read, write: if isOwner(userId);
       }
+
+      match /savingsGoals/{goalId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /savingsTransactions/{transactionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /savingsSettings/{settingsId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /notifications/{notificationId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /reminders/{reminderId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /pushSubscriptions/{subscriptionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /notificationSettings/{settingsId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /aiBriefings/{briefingId} {
+        allow read, write: if isOwner(userId);
+      }
     }
   }
 }

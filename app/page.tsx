@@ -13,6 +13,8 @@ import { CalendarView } from '@/components/CalendarView';
 import { ProgressView } from '@/components/ProgressView';
 import { SettingsView } from '@/components/SettingsView';
 import { SleepView } from '@/components/sleep/SleepView';
+import { SavingsView } from '@/components/savings/SavingsView';
+import { NotificationCenterView } from '@/components/notifications/NotificationCenterView';
 import { HabitModal } from '@/components/modals/HabitModal';
 import { TodoModal } from '@/components/modals/TodoModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
@@ -300,6 +302,18 @@ function LifeOSAppContent() {
               </motion.div>
             )}
 
+            {activeTab === 'savings' && (
+              <motion.div
+                key="savings"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <SavingsView />
+              </motion.div>
+            )}
+
             {activeTab === 'sleep' && (
               <motion.div
                 key="sleep"
@@ -356,6 +370,17 @@ function LifeOSAppContent() {
                   onConfirmReset={handlePromptResetData}
                   onConfirmClear={handlePromptClearData}
                 />
+              </motion.div>
+            )}
+            {activeTab === 'notifications' && (
+              <motion.div
+                key="notifications"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <NotificationCenterView />
               </motion.div>
             )}
           </AnimatePresence>
