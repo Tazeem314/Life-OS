@@ -37,6 +37,7 @@ export function GoalWeeklyReviewModal({
   const progressGained = 12;
 
   const handleGenerateAIReview = async () => {
+    if (!goal) return;
     setIsLoadingAi(true);
     try {
       const res = await fetch('/api/goals/ai', {
@@ -71,6 +72,7 @@ export function GoalWeeklyReviewModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!goal) return;
     const newReview: GoalWeeklyReview = {
       id: `rev_${Date.now()}`,
       goalId: goal.id,

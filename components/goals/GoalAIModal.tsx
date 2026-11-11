@@ -43,6 +43,7 @@ export function GoalAIModal({
   } | null>(null);
 
   const handleRequestAIReplan = async (customText?: string) => {
+    if (!goal) return;
     setIsLoading(true);
     try {
       const res = await fetch('/api/goals/ai', {
@@ -78,7 +79,7 @@ export function GoalAIModal({
   };
 
   const handleApply = () => {
-    if (!proposal) return;
+    if (!proposal || !goal) return;
     onApplyPlanChanges(goal.id, proposal);
     onClose();
   };
