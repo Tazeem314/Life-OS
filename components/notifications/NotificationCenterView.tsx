@@ -64,6 +64,7 @@ export function NotificationCenterView() {
     markAllNotificationsAsRead,
     deleteNotification,
     clearAllReadNotifications,
+    clearAllNotifications,
     snoozeNotification,
     updateReminder,
     deleteReminder,
@@ -148,6 +149,20 @@ export function NotificationCenterView() {
     });
   };
 
+  const promptClearAll = () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Clear All Notifications?',
+      message:
+        'This will permanently remove all notification records from your view and cloud storage. Your underlying tasks, habits, and goals are never affected.',
+      confirmText: 'Clear All Notifications',
+      onConfirm: () => {
+        clearAllNotifications();
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  };
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-16">
       {/* 1. Header Toolbar */}
@@ -200,14 +215,28 @@ export function NotificationCenterView() {
           )}
 
           {/* Clear Read */}
-          <button
-            type="button"
-            onClick={promptClearRead}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Clear Read</span>
-          </button>
+          {notifications.some((n) => n.read) && (
+            <button
+              type="button"
+              onClick={promptClearRead}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Clear Read</span>
+            </button>
+          )}
+
+          {/* Clear All */}
+          {notifications.length > 0 && (
+            <button
+              type="button"
+              onClick={promptClearAll}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+              <span className="hidden sm:inline">Clear All</span>
+            </button>
+          )}
 
           {/* Settings */}
           <button

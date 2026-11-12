@@ -476,20 +476,79 @@ export const Storage = {
     } catch {}
   },
 
-  clearLocalUserData(): void {
+  clearLocalUserData(userId?: string): void {
     if (typeof window === 'undefined') return;
     try {
-      localStorage.removeItem(HABITS_STORAGE_KEY);
-      localStorage.removeItem(COMPLETIONS_STORAGE_KEY);
-      localStorage.removeItem(TODOS_STORAGE_KEY);
-      localStorage.removeItem(GOALS_STORAGE_KEY);
-      localStorage.removeItem(SETTINGS_STORAGE_KEY);
-      localStorage.removeItem(SLEEP_LOGS_STORAGE_KEY);
-      localStorage.removeItem(ACTIVE_SLEEP_SESSION_KEY);
-      localStorage.removeItem(SAVINGS_GOALS_STORAGE_KEY);
-      localStorage.removeItem(SAVINGS_TRANSACTIONS_STORAGE_KEY);
-      localStorage.removeItem(SAVINGS_SETTINGS_STORAGE_KEY);
-      localStorage.removeItem(DELETED_IDS_KEY);
+      const keysToClear = [
+        HABITS_STORAGE_KEY,
+        COMPLETIONS_STORAGE_KEY,
+        TODOS_STORAGE_KEY,
+        GOALS_STORAGE_KEY,
+        SETTINGS_STORAGE_KEY,
+        SLEEP_LOGS_STORAGE_KEY,
+        ACTIVE_SLEEP_SESSION_KEY,
+        SAVINGS_GOALS_STORAGE_KEY,
+        SAVINGS_TRANSACTIONS_STORAGE_KEY,
+        SAVINGS_SETTINGS_STORAGE_KEY,
+        DELETED_IDS_KEY,
+        'lifeos_notifications_v1',
+        'lifeos_reminders_v1',
+        'lifeos_notif_settings_v1',
+        'lifeos_ai_briefings_v1',
+        'lifeos_dismissed_notif_keys',
+        'lifeos_deleted_notif_ids_v1',
+        'lifeos_pending_cloud_writes',
+      ];
+
+      for (const k of keysToClear) {
+        localStorage.removeItem(k);
+        if (userId) {
+          localStorage.removeItem(`${k}_${userId}`);
+        }
+      }
+
+      if (userId) {
+        localStorage.removeItem(`lifeos_synced_ids_${userId}`);
+        localStorage.removeItem(`lifeos_pending_writes_${userId}`);
+        localStorage.removeItem(`lifeos_dismissed_notif_keys_${userId}`);
+        localStorage.removeItem(`lifeos_deleted_notif_ids_${userId}`);
+      }
+    } catch {}
+  },
+
+  getDismissedNotificationKeys(userId?: string): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_dismissed_notif_keys_${uid}` : 'lifeos_dismissed_notif_keys';
+      const raw = localStorage.getItem(key);
+      if (!raw) return new Set();
+      const list: string[] = JSON.parse(raw);
+      return new Set(Array.isArray(list) ? list : []);
+    } catch {
+      return new Set();
+    }
+  },
+
+  saveDismissedNotificationKeys(keys: Set<string> | string[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_dismissed_notif_keys_${uid}` : 'lifeos_dismissed_notif_keys';
+      const arr = Array.from(keys).slice(-500);
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch {}
+  },
+
+  addDismissedNotificationKey(keyOrKeys: string | string[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const current = this.getDismissedNotificationKeys(userId);
+      const items = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
+      for (const k of items) {
+        if (k && typeof k === 'string') current.add(k);
+      }
+      this.saveDismissedNotificationKeys(current, userId);
     } catch {}
   },
 

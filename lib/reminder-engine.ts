@@ -18,6 +18,7 @@ export interface ReminderEvaluationContext {
   savingsGoals?: unknown[];
   customReminders?: ReminderDefinition[];
   existingNotifications?: NotificationRecord[];
+  dismissedKeys?: Set<string> | string[];
   currentDateKey?: string; // "YYYY-MM-DD"
   currentTimeStr?: string; // "HH:mm"
   currentDate?: Date;
@@ -55,15 +56,23 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       .map((n) => (n.idempotencyKey || n.deduplicationKey) as string)
   );
 
+  const dismissedKeys = new Set<string>(
+    Array.isArray(context.dismissedKeys)
+      ? context.dismissedKeys
+      : context.dismissedKeys instanceof Set
+      ? Array.from(context.dismissedKeys)
+      : []
+  );
+
   const newNotifications: NotificationRecord[] = [];
   const inQuietHours = isWithinQuietHours(currentTimeStr, settings.quietHours);
 
-  // Helper to push notification if idempotency key is not taken
+  // Helper to push notification if idempotency key is not taken or previously dismissed/deleted
   const queueNotification = (
     notif: Omit<NotificationRecord, 'id' | 'userId' | 'createdAt' | 'read' | 'deliveryStatus'>,
     idempotencyKey: string
   ) => {
-    if (existingKeys.has(idempotencyKey)) {
+    if (existingKeys.has(idempotencyKey) || dismissedKeys.has(idempotencyKey)) {
       return;
     }
     existingKeys.add(idempotencyKey);

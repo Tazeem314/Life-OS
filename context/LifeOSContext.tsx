@@ -792,6 +792,7 @@ interface LifeOSContextType {
   markAllNotificationsAsRead: () => Promise<void>;
   deleteNotification: (id: string) => Promise<void>;
   clearAllReadNotifications: () => Promise<void>;
+  clearAllNotifications: () => Promise<void>;
   snoozeNotification: (id: string, minutes: number) => Promise<void>;
   dispatchNotification: (notif: Omit<NotificationRecord, 'id' | 'createdAt'>) => Promise<NotificationRecord>;
   createReminder: (reminder: Omit<ReminderDefinition, 'id' | 'createdAt' | 'updatedAt'>) => Promise<ReminderDefinition>;
@@ -1013,10 +1014,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         const cachedUid = Storage.getCachedUserId();
         const lastSignOutUid = typeof window !== 'undefined' ? localStorage.getItem('lifeos_last_signed_out_uid') : null;
         const isAccountSwitch = (cachedUid && cachedUid !== currentUser.uid) || (lastSignOutUid && lastSignOutUid !== currentUser.uid);
+        let isAccountSwitchActive = isAccountSwitch;
 
         if (isAccountSwitch) {
           // Account switch detected: clear in-memory state and un-scoped cache to prevent cross-account data leakage
-          Storage.clearLocalUserData();
+          Storage.clearLocalUserData(cachedUid || lastSignOutUid || undefined);
           setHabits([]);
           habitsRef.current = [];
           setCompletions([]);
@@ -1028,8 +1030,23 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           const seeds = getInitialSeedSleepLogs();
           setSleepLogs(seeds);
           sleepLogsRef.current = seeds;
+          setSavingsGoals([]);
+          savingsGoalsRef.current = [];
+          setSavingsTransactions([]);
+          savingsTransactionsRef.current = [];
+          setSavingsSettings(DEFAULT_SAVINGS_SETTINGS);
+          savingsSettingsRef.current = DEFAULT_SAVINGS_SETTINGS;
           setSettings(INITIAL_SETTINGS);
           settingsRef.current = INITIAL_SETTINGS;
+          setNotifications([]);
+          notificationsRef.current = [];
+          setCustomReminders([]);
+          customRemindersRef.current = [];
+          setAIBriefings([]);
+          aiBriefingsRef.current = [];
+          setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
+          notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
+          deletionsRef.current = new Map();
         }
 
         Storage.setCachedUserId(currentUser.uid);
@@ -1059,7 +1076,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingHabits = getPendingWriteIds('habit', currentUser.uid);
-            const currentLocal = habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits();
+            const currentLocal = isAccountSwitchActive ? [] : (habitsRef.current.length > 0 ? habitsRef.current : Storage.getHabits());
             const { merged, newToUpload } = mergeRemoteHabits(
               currentLocal,
               cloudHabits,
@@ -1076,7 +1093,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((h) => syncHabitToCloud(currentUser.uid, h));
             }
           },
@@ -1086,7 +1103,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingCompletions = getPendingWriteIds('completion', currentUser.uid);
-            const currentLocal = completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions();
+            const currentLocal = isAccountSwitchActive ? [] : (completionsRef.current.length > 0 ? completionsRef.current : Storage.getCompletions());
             const { merged, newToUpload } = mergeRemoteCompletions(
               currentLocal,
               cloudCompletions,
@@ -1103,7 +1120,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((c) => syncCompletionToCloud(currentUser.uid, c));
             }
           },
@@ -1113,7 +1130,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingTodos = getPendingWriteIds('todo', currentUser.uid);
-            const currentLocal = todosRef.current.length > 0 ? todosRef.current : Storage.getTodos();
+            const currentLocal = isAccountSwitchActive ? [] : (todosRef.current.length > 0 ? todosRef.current : Storage.getTodos());
             const { merged, newToUpload } = mergeRemoteTodos(
               currentLocal,
               cloudTodos,
@@ -1130,7 +1147,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((t) => syncTodoToCloud(currentUser.uid, t));
             }
           },
@@ -1140,7 +1157,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingGoals = getPendingWriteIds('goal', currentUser.uid);
-            const currentLocal = goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals();
+            const currentLocal = isAccountSwitchActive ? [] : (goalsRef.current.length > 0 ? goalsRef.current : Storage.getGoals());
             const { merged, newToUpload } = mergeRemoteGoals(
               currentLocal,
               cloudGoals,
@@ -1157,7 +1174,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((g) => syncGoalToCloud(currentUser.uid, g));
             }
           },
@@ -1167,7 +1184,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingSleepIds = getPendingWriteIds('sleep', currentUser.uid);
-            const currentLocal = sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs();
+            const currentLocal = isAccountSwitchActive ? [] : (sleepLogsRef.current.length > 0 ? sleepLogsRef.current : Storage.getSleepLogs());
             const { merged, newToUpload } = mergeRemoteSleepLogs(
               currentLocal,
               cloudSleepLogs,
@@ -1184,7 +1201,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((s) => syncSleepLogToCloud(currentUser.uid, s));
             }
           },
@@ -1213,7 +1230,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingGoals = getPendingWriteIds('savings_goal', currentUser.uid);
-            const currentLocal = savingsGoalsRef.current.length > 0 ? savingsGoalsRef.current : Storage.getSavingsGoals();
+            const currentLocal = isAccountSwitchActive ? [] : (savingsGoalsRef.current.length > 0 ? savingsGoalsRef.current : Storage.getSavingsGoals());
             const { merged, newToUpload } = mergeRemoteSavingsGoals(
               currentLocal,
               cloudSavingsGoals,
@@ -1230,7 +1247,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((g) => syncSavingsGoalToCloud(currentUser.uid, g));
             }
           },
@@ -1240,7 +1257,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             const isAuthoritative = !meta?.fromCache;
             const synced = Storage.getSyncedIds(currentUser.uid);
             const pendingTx = getPendingWriteIds('savings_transaction', currentUser.uid);
-            const currentLocal = savingsTransactionsRef.current.length > 0 ? savingsTransactionsRef.current : Storage.getSavingsTransactions();
+            const currentLocal = isAccountSwitchActive ? [] : (savingsTransactionsRef.current.length > 0 ? savingsTransactionsRef.current : Storage.getSavingsTransactions());
             const { merged, newToUpload } = mergeRemoteSavingsTransactions(
               currentLocal,
               cloudSavingsTx,
@@ -1257,7 +1274,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
             setLastSyncedAt(new Date());
 
-            if (isAuthoritative && newToUpload.length > 0) {
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
               newToUpload.forEach((t) => syncSavingsTransactionToCloud(currentUser.uid, t));
             }
           },
@@ -1276,10 +1293,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           },
           onNotifications: (cloudNotifs) => {
             if (!cloudNotifs) return;
-            setNotifications(cloudNotifs);
-            notificationsRef.current = cloudNotifs;
+            const dismissed = Storage.getDismissedNotificationKeys(currentUser.uid);
+            const filtered = cloudNotifs.filter(
+              (n) => !dismissed.has(n.id) && !dismissed.has(n.idempotencyKey || '') && !dismissed.has(n.deduplicationKey || '')
+            );
+            setNotifications(filtered);
+            notificationsRef.current = filtered;
             if (typeof window !== 'undefined') {
-              localStorage.setItem('lifeos_notifications_v1', JSON.stringify(cloudNotifs));
+              localStorage.setItem('lifeos_notifications_v1', JSON.stringify(filtered));
             }
           },
           onReminders: (cloudReminders) => {
@@ -1649,7 +1670,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       userRef.current = null;
       Storage.setCachedUserId(null);
-      Storage.clearLocalUserData();
+      Storage.clearLocalUserData(currentUid || undefined);
       setHabits([]);
       habitsRef.current = [];
       setCompletions([]);
@@ -1669,6 +1690,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       savingsSettingsRef.current = DEFAULT_SAVINGS_SETTINGS;
       setSettings(INITIAL_SETTINGS);
       settingsRef.current = INITIAL_SETTINGS;
+      setNotifications([]);
+      notificationsRef.current = [];
+      setCustomReminders([]);
+      customRemindersRef.current = [];
+      setAIBriefings([]);
+      aiBriefingsRef.current = [];
+      setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
+      notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
 
       showToast({
         type: 'info',
@@ -3698,32 +3727,91 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   }, [user, notifications]);
 
   const deleteNotification = useCallback(async (id: string) => {
-    setNotifications((prev) => {
-      const updated = prev.filter((n) => n.id !== id);
-      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
-      return updated;
-    });
+    const target = notificationsRef.current.find((n) => n.id === id);
+    const keysToDismiss: string[] = [id];
+    if (target) {
+      if (target.idempotencyKey) keysToDismiss.push(target.idempotencyKey);
+      if (target.deduplicationKey) keysToDismiss.push(target.deduplicationKey);
+      if (target.sourceId) {
+        const today = getTodayKey();
+        keysToDismiss.push(`${target.category}_${target.sourceId}_${today}`);
+      }
+    }
+    Storage.addDismissedNotificationKey(keysToDismiss, user?.uid);
+
+    const updated = notificationsRef.current.filter((n) => n.id !== id);
+    notificationsRef.current = updated;
+    setNotifications(updated);
+    if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
+
     if (user?.uid) {
       deleteNotificationFromCloud(user.uid, id);
     }
   }, [user]);
 
   const clearAllReadNotifications = useCallback(async () => {
-    const readIds = notifications.filter((n) => n.read).map((n) => n.id);
-    if (readIds.length === 0) return;
+    const currentList = notificationsRef.current;
+    const readItems = currentList.filter((n) => n.read);
+    if (readItems.length === 0) return;
 
-    setNotifications((prev) => {
-      const updated = prev.filter((n) => !n.read);
-      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(updated));
-      return updated;
-    });
+    const keysToDismiss: string[] = [];
+    const today = getTodayKey();
+    for (const item of readItems) {
+      keysToDismiss.push(item.id);
+      if (item.idempotencyKey) keysToDismiss.push(item.idempotencyKey);
+      if (item.deduplicationKey) keysToDismiss.push(item.deduplicationKey);
+      if (item.sourceId) keysToDismiss.push(`${item.category}_${item.sourceId}_${today}`);
+    }
+    Storage.addDismissedNotificationKey(keysToDismiss, user?.uid);
+
+    const remaining = currentList.filter((n) => !n.read);
+    notificationsRef.current = remaining;
+    setNotifications(remaining);
+    if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(remaining));
 
     if (user?.uid) {
-      for (const id of readIds) {
-        deleteNotificationFromCloud(user.uid, id);
+      for (const item of readItems) {
+        deleteNotificationFromCloud(user.uid, item.id);
       }
     }
-  }, [user, notifications]);
+
+    showToast({
+      title: 'Notifications Cleared',
+      message: `${readItems.length} read notification${readItems.length > 1 ? 's' : ''} removed`,
+      type: 'info',
+    });
+  }, [user, showToast]);
+
+  const clearAllNotifications = useCallback(async () => {
+    const currentList = notificationsRef.current;
+    if (currentList.length === 0) return;
+
+    const keysToDismiss: string[] = [];
+    const today = getTodayKey();
+    for (const item of currentList) {
+      keysToDismiss.push(item.id);
+      if (item.idempotencyKey) keysToDismiss.push(item.idempotencyKey);
+      if (item.deduplicationKey) keysToDismiss.push(item.deduplicationKey);
+      if (item.sourceId) keysToDismiss.push(`${item.category}_${item.sourceId}_${today}`);
+    }
+    Storage.addDismissedNotificationKey(keysToDismiss, user?.uid);
+
+    notificationsRef.current = [];
+    setNotifications([]);
+    if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify([]));
+
+    if (user?.uid) {
+      for (const item of currentList) {
+        deleteNotificationFromCloud(user.uid, item.id);
+      }
+    }
+
+    showToast({
+      title: 'All Notifications Cleared',
+      message: 'All notifications have been removed',
+      type: 'info',
+    });
+  }, [user, showToast]);
 
   const snoozeNotification = useCallback(async (id: string, minutes: number) => {
     const snoozeUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
@@ -3950,6 +4038,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     const now = new Date();
     const currentDateKey = getTodayKey();
     const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const dismissedKeys = Storage.getDismissedNotificationKeys(user?.uid);
 
     const ctx: ReminderEvaluationContext = {
       userId: user?.uid || 'local_user',
@@ -3961,6 +4050,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       goals: goalsRef.current || [],
       customReminders: customRemindersRef.current || [],
       existingNotifications: notificationsRef.current || [],
+      dismissedKeys,
       currentDateKey,
       currentTimeStr,
       currentDate: now,
@@ -3969,15 +4059,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     const newReminders = evaluateAllReminders(ctx);
     if (!newReminders || newReminders.length === 0) return;
 
-    setNotifications((prev) => {
-      const merged = [...newReminders, ...prev];
-      const pruned = pruneExpiredNotifications(merged, 30);
-      if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(pruned));
-      return pruned;
-    });
+    const validReminders = newReminders.filter(
+      (n) => !dismissedKeys.has(n.id) && !dismissedKeys.has(n.idempotencyKey || '') && !dismissedKeys.has(n.deduplicationKey || '')
+    );
+    if (validReminders.length === 0) return;
+
+    const merged = [...validReminders, ...notificationsRef.current];
+    const pruned = pruneExpiredNotifications(merged, 30);
+    notificationsRef.current = pruned;
+    setNotifications(pruned);
+    if (typeof window !== 'undefined') localStorage.setItem('lifeos_notifications_v1', JSON.stringify(pruned));
 
     if (user?.uid) {
-      newReminders.forEach((n) => syncNotificationToCloud(user.uid, n));
+      validReminders.forEach((n) => syncNotificationToCloud(user.uid, n));
     }
 
     if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
@@ -3986,7 +4080,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       try {
-        const topNotif = newReminders[0];
+        const topNotif = validReminders[0];
         if (document.hidden && topNotif) {
           new Notification(topNotif.title, {
             body: topNotif.message,
@@ -4132,6 +4226,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     markAllNotificationsAsRead,
     deleteNotification,
     clearAllReadNotifications,
+    clearAllNotifications,
     snoozeNotification,
     dispatchNotification,
     createReminder,
