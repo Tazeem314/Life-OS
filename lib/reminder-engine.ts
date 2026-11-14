@@ -25,8 +25,113 @@ export interface ReminderEvaluationContext {
 }
 
 /**
+ * Normalizes an idempotency/deduplication key so that userId differences
+ * (e.g. 'local_user' vs Firebase UID, or cross-session rehydration)
+ * still resolve to the exact same canonical dismissal key.
+ */
+export function stripUserIdFromNotificationKey(key?: string, userId?: string): string | null {
+  if (!key || typeof key !== 'string') return null;
+
+  let stripped = key;
+  if (userId && stripped.includes(`_${userId}_`)) {
+    stripped = stripped.replace(`_${userId}_`, '_');
+  } else if (stripped.includes('_local_user_')) {
+    stripped = stripped.replace('_local_user_', '_');
+  } else {
+    // Generic pattern: <prefix>_<uid_or_local_user>_<rest>
+    const match = stripped.match(
+      /^(task_overdue|task_due|habit_prompt|routine_morning|routine_evening|routine_weekly|goal_target|custom_rem)_([A-Za-z0-9_-]{8,}|local_user)_(.+)$/
+    );
+    if (match) {
+      stripped = `${match[1]}_${match[3]}`;
+    }
+  }
+
+  return stripped !== key ? stripped : null;
+}
+
+/**
+ * Derives all dismissal/suppression keys associated with a notification record.
+ * Storing and checking all of these prevents deleted notifications from returning
+ * under different userId prefixes, legacy keys, or reminder re-evaluations.
+ */
+export function getNotificationDismissalKeys(
+  notif: Partial<NotificationRecord> & { id?: string },
+  userId?: string,
+  fallbackDateKey?: string
+): string[] {
+  const keys = new Set<string>();
+
+  if (notif.id) keys.add(notif.id);
+
+  const dateKey =
+    fallbackDateKey ||
+    (typeof notif.createdAt === 'string' && notif.createdAt.length >= 10
+      ? notif.createdAt.slice(0, 10)
+      : undefined);
+
+  const candidateKeys = [notif.idempotencyKey, notif.deduplicationKey].filter(
+    (k): k is string => Boolean(k && typeof k === 'string')
+  );
+
+  for (const k of candidateKeys) {
+    keys.add(k);
+    const stripped = stripUserIdFromNotificationKey(k, notif.userId || userId);
+    if (stripped) {
+      keys.add(`canonical:${stripped}`);
+    } else {
+      keys.add(`canonical:${k}`);
+    }
+  }
+
+  const entityId = notif.relatedId || notif.sourceId;
+  if (notif.category && entityId && dateKey) {
+    keys.add(`canonical:entity:${notif.category}:${entityId}:${dateKey}`);
+    keys.add(`${notif.category}_${entityId}_${dateKey}`);
+  }
+
+  if (notif.category === 'routines' && dateKey) {
+    const titleLower = (notif.title || '').toLowerCase();
+    if (titleLower.includes('morning')) {
+      keys.add(`canonical:routine_morning_${dateKey}`);
+    } else if (titleLower.includes('evening')) {
+      keys.add(`canonical:routine_evening_${dateKey}`);
+    } else if (titleLower.includes('weekly')) {
+      keys.add(`canonical:routine_weekly_${dateKey}`);
+    }
+  }
+
+  return Array.from(keys);
+}
+
+/**
+ * Returns true if a notification matches any dismissed key or predates the Clear All watermark.
+ */
+export function isNotificationDismissed(
+  notif: Partial<NotificationRecord> & { id?: string },
+  dismissedKeys: Set<string>,
+  clearedAllAt?: string | null,
+  userId?: string
+): boolean {
+  if (clearedAllAt && notif.createdAt) {
+    const createdMs = Date.parse(notif.createdAt);
+    const clearedMs = Date.parse(clearedAllAt);
+    if (!Number.isNaN(createdMs) && !Number.isNaN(clearedMs) && createdMs <= clearedMs) {
+      return true;
+    }
+  }
+
+  if (!dismissedKeys || dismissedKeys.size === 0) {
+    return false;
+  }
+
+  const keys = getNotificationDismissalKeys(notif, userId);
+  return keys.some((k) => dismissedKeys.has(k));
+}
+
+/**
  * Evaluates all productivity and routine conditions to determine if any new notifications should be dispatched.
- * Guarantees idempotency via stable unique idempotencyKey hashes.
+ * Guarantees idempotency via stable unique idempotencyKey hashes and canonical dismissal matching.
  */
 export function evaluateReminders(context: ReminderEvaluationContext): NotificationRecord[] {
   const settings = context.settings || DEFAULT_NOTIFICATION_SETTINGS;
@@ -50,11 +155,12 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
     context.currentTimeStr ||
     `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-  const existingKeys = new Set(
-    existingNotifications
-      .filter((n) => n.idempotencyKey || n.deduplicationKey)
-      .map((n) => (n.idempotencyKey || n.deduplicationKey) as string)
-  );
+  const existingKeys = new Set<string>();
+  for (const n of existingNotifications) {
+    for (const k of getNotificationDismissalKeys(n, userId, currentDateKey)) {
+      existingKeys.add(k);
+    }
+  }
 
   const dismissedKeys = new Set<string>(
     Array.isArray(context.dismissedKeys)
@@ -67,15 +173,26 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
   const newNotifications: NotificationRecord[] = [];
   const inQuietHours = isWithinQuietHours(currentTimeStr, settings.quietHours);
 
-  // Helper to push notification if idempotency key is not taken or previously dismissed/deleted
+  // Helper to push notification if idempotency key (or any canonical key) is not taken or previously dismissed/deleted
   const queueNotification = (
     notif: Omit<NotificationRecord, 'id' | 'userId' | 'createdAt' | 'read' | 'deliveryStatus'>,
     idempotencyKey: string
   ) => {
-    if (existingKeys.has(idempotencyKey) || dismissedKeys.has(idempotencyKey)) {
+    const candidateRecord: Partial<NotificationRecord> = {
+      ...notif,
+      userId,
+      idempotencyKey,
+      deduplicationKey: idempotencyKey,
+    };
+    const allCandidateKeys = getNotificationDismissalKeys(candidateRecord, userId, currentDateKey);
+
+    if (allCandidateKeys.some((k) => existingKeys.has(k) || dismissedKeys.has(k))) {
       return;
     }
-    existingKeys.add(idempotencyKey);
+
+    for (const k of allCandidateKeys) {
+      existingKeys.add(k);
+    }
 
     const deliveryStatus = inQuietHours ? 'in_app_only' : settings.pushEnabled ? 'created' : 'in_app_only';
 
@@ -203,6 +320,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
               : 'Start your morning with focus. Plan your day and check in with your goals.',
           priority: 'normal',
           relatedType: 'routine',
+          relatedId: 'morning_briefing',
           deepLink: '/?tab=dashboard',
         },
         morningKey
@@ -223,6 +341,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
               : 'End your day with clarity. Review what got done and prepare for tomorrow.',
           priority: 'low',
           relatedType: 'routine',
+          relatedId: 'evening_review',
           deepLink: '/?tab=dashboard',
         },
         eveningKey
@@ -240,6 +359,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
           message: 'Time for your weekly review. Calibrate long-term goals and align your next sprint.',
           priority: 'normal',
           relatedType: 'goal',
+          relatedId: 'weekly_review',
           deepLink: '/?tab=goals',
         },
         weeklyKey
@@ -302,6 +422,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
             message: rem.message || 'Custom reminder triggered from Life OS.',
             priority: 'normal',
             relatedType: 'routine',
+            relatedId: rem.id,
             deepLink: rem.deepLink || '/?tab=notifications',
           },
           customKey

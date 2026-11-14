@@ -1,4 +1,5 @@
 import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, ActiveSleepSession, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
+import { NotificationRecord, ReminderDefinition, NotificationSettings, AIDailyBriefing } from './notification-types';
 import { getInitialSeedSleepLogs, DEFAULT_SLEEP_SETTINGS } from './sleep-service';
 import { DEFAULT_SAVINGS_SETTINGS } from './savings-service';
 
@@ -476,6 +477,19 @@ export const Storage = {
     } catch {}
   },
 
+  clearGuestNotificationStorage(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.removeItem('lifeos_notifications_v1');
+      localStorage.removeItem('lifeos_reminders_v1');
+      localStorage.removeItem('lifeos_notif_settings_v1');
+      localStorage.removeItem('lifeos_ai_briefings_v1');
+      localStorage.removeItem('lifeos_dismissed_notif_keys');
+      localStorage.removeItem('lifeos_notif_cleared_at');
+      localStorage.removeItem('lifeos_deleted_notif_ids_v1');
+    } catch {}
+  },
+
   clearLocalUserData(userId?: string): void {
     if (typeof window === 'undefined') return;
     try {
@@ -496,6 +510,7 @@ export const Storage = {
         'lifeos_notif_settings_v1',
         'lifeos_ai_briefings_v1',
         'lifeos_dismissed_notif_keys',
+        'lifeos_notif_cleared_at',
         'lifeos_deleted_notif_ids_v1',
         'lifeos_pending_cloud_writes',
       ];
@@ -510,8 +525,127 @@ export const Storage = {
       if (userId) {
         localStorage.removeItem(`lifeos_synced_ids_${userId}`);
         localStorage.removeItem(`lifeos_pending_writes_${userId}`);
-        localStorage.removeItem(`lifeos_dismissed_notif_keys_${userId}`);
         localStorage.removeItem(`lifeos_deleted_notif_ids_${userId}`);
+        // Note: We intentionally keep lifeos_dismissed_notif_keys_${userId} and
+        // lifeos_notif_cleared_at_${userId} scoped strictly to userId so that
+        // re-logging into the same Gmail account never resurrects deleted alerts,
+        // while a different Gmail account only ever reads its own uid-scoped keys.
+      }
+    } catch {}
+  },
+
+  getNotifications(userId?: string): NotificationRecord[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notifications_v1_${uid}` : 'lifeos_notifications_v1';
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveNotifications(list: NotificationRecord[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notifications_v1_${uid}` : 'lifeos_notifications_v1';
+      localStorage.setItem(key, JSON.stringify(Array.isArray(list) ? list : []));
+    } catch {}
+  },
+
+  getReminders(userId?: string): ReminderDefinition[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_reminders_v1_${uid}` : 'lifeos_reminders_v1';
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveReminders(list: ReminderDefinition[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_reminders_v1_${uid}` : 'lifeos_reminders_v1';
+      localStorage.setItem(key, JSON.stringify(Array.isArray(list) ? list : []));
+    } catch {}
+  },
+
+  getNotificationSettings(userId?: string): NotificationSettings | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notif_settings_v1_${uid}` : 'lifeos_notif_settings_v1';
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  saveNotificationSettings(settings: NotificationSettings, userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notif_settings_v1_${uid}` : 'lifeos_notif_settings_v1';
+      localStorage.setItem(key, JSON.stringify(settings));
+    } catch {}
+  },
+
+  getAIBriefings(userId?: string): AIDailyBriefing[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_ai_briefings_v1_${uid}` : 'lifeos_ai_briefings_v1';
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveAIBriefings(list: AIDailyBriefing[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_ai_briefings_v1_${uid}` : 'lifeos_ai_briefings_v1';
+      localStorage.setItem(key, JSON.stringify(Array.isArray(list) ? list : []));
+    } catch {}
+  },
+
+  getNotificationsClearedAt(userId?: string): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notif_cleared_at_${uid}` : 'lifeos_notif_cleared_at';
+      return localStorage.getItem(key) || null;
+    } catch {
+      return null;
+    }
+  },
+
+  setNotificationsClearedAt(isoTimestamp: string | null, userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `lifeos_notif_cleared_at_${uid}` : 'lifeos_notif_cleared_at';
+      if (isoTimestamp) {
+        localStorage.setItem(key, isoTimestamp);
+      } else {
+        localStorage.removeItem(key);
       }
     } catch {}
   },

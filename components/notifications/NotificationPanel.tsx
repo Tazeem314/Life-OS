@@ -196,7 +196,7 @@ export function NotificationPanel({ onClose }: NotificationPanelProps) {
                       deleteNotification(n.id);
                     }}
                     title="Delete notification"
-                    className="absolute top-3 right-3 text-zinc-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition cursor-pointer p-1"
+                    className="absolute top-3 right-3 text-zinc-400 hover:text-rose-500 opacity-75 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition cursor-pointer p-1"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

@@ -66,6 +66,13 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
             __html: `
               (function() {
                 try {
+                  window.addEventListener('error', function(event) {
+                    if (event && typeof event.filename === 'string' && event.filename.indexOf('chrome-extension://') === 0) {
+                      event.preventDefault();
+                    }
+                  }, true);
+                } catch (e) {}
+                try {
                   var settingsStr = localStorage.getItem('life_os_settings_v1');
                   var theme = 'light';
                   if (settingsStr) {

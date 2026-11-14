@@ -4,6 +4,7 @@ import {
   doc,
   collection,
   setDoc,
+  updateDoc,
   deleteDoc,
   onSnapshot,
   writeBatch,
@@ -233,8 +234,20 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): void {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  // Don't treat transient offline / unreachable backend status as an unhandled application error
+  if (
+    errMsg.includes('Could not reach Cloud Firestore backend') ||
+    errMsg.includes('offline mode') ||
+    errMsg.includes('unavailable') ||
+    errMsg.includes('Failed to get document because the client is offline')
+  ) {
+    console.info('Firestore operating in resilient offline cache mode:', errMsg);
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -585,7 +598,26 @@ export async function syncNotificationToCloud(userId: string, notification: Noti
   }
 }
 
+export async function updateNotificationInCloud(
+  userId: string,
+  notificationId: string,
+  updates: Partial<NotificationRecord>
+): Promise<void> {
+  if (!userId || !notificationId) return;
+  try {
+    const notifRef = doc(db, 'users', userId, 'notifications', notificationId);
+    await updateDoc(notifRef, cleanForFirestore(updates));
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (error?.code === 'not-found' || msg.includes('No document to update')) {
+      return;
+    }
+    handleFirestoreError(error, OperationType.UPDATE, `users/${userId}/notifications/${notificationId}`);
+  }
+}
+
 export async function deleteNotificationFromCloud(userId: string, notificationId: string): Promise<void> {
+  if (!userId || !notificationId) return;
   try {
     const notifRef = doc(db, 'users', userId, 'notifications', notificationId);
     await deleteDoc(notifRef);
@@ -594,17 +626,98 @@ export async function deleteNotificationFromCloud(userId: string, notificationId
   }
 }
 
-export async function markAllNotificationsReadInCloud(userId: string, notificationIds: string[]): Promise<void> {
+export async function deleteNotificationsBatchFromCloud(
+  userId: string,
+  notificationIds: string[]
+): Promise<void> {
+  if (!userId || !notificationIds || notificationIds.length === 0) return;
+  const uniqueIds = Array.from(new Set(notificationIds.filter(Boolean)));
+  const CHUNK_SIZE = 400;
+
+  for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
+    try {
+      const batch = writeBatch(db);
+      for (const id of chunk) {
+        batch.delete(doc(db, 'users', userId, 'notifications', id));
+      }
+      await batch.commit();
+    } catch {
+      await Promise.allSettled(
+        chunk.map((id) => deleteDoc(doc(db, 'users', userId, 'notifications', id)))
+      );
+    }
+  }
+}
+
+export async function deleteAllNotificationsFromCloud(
+  userId: string,
+  knownIds: string[] = []
+): Promise<void> {
+  if (!userId) return;
   try {
-    const batch = writeBatch(db);
-    const nowIso = new Date().toISOString();
-    notificationIds.forEach((id) => {
-      const ref = doc(db, 'users', userId, 'notifications', id);
-      batch.update(ref, { read: true, readAt: nowIso });
-    });
-    await batch.commit();
+    if (knownIds.length > 0) {
+      await deleteNotificationsBatchFromCloud(userId, knownIds);
+    }
+    // Sweep any residual or out-of-sync docs directly in Firestore collection
+    const snap = await getDocs(collection(db, 'users', userId, 'notifications'));
+    if (!snap.empty) {
+      const remainingIds = snap.docs.map((d) => d.id);
+      await deleteNotificationsBatchFromCloud(userId, remainingIds);
+    }
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notifications`);
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications`);
+  }
+}
+
+export async function markAllNotificationsReadInCloud(userId: string, notificationIds: string[]): Promise<void> {
+  if (!userId || !notificationIds || notificationIds.length === 0) return;
+  const uniqueIds = Array.from(new Set(notificationIds.filter(Boolean)));
+  const nowIso = new Date().toISOString();
+  const CHUNK_SIZE = 400;
+
+  for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
+    try {
+      const batch = writeBatch(db);
+      for (const id of chunk) {
+        const ref = doc(db, 'users', userId, 'notifications', id);
+        batch.update(ref, { read: true, readAt: nowIso });
+      }
+      await batch.commit();
+    } catch {
+      // Fallback per-doc updateDoc so a deleted/missing doc never breaks other updates or resurrects deleted docs
+      await Promise.allSettled(
+        chunk.map((id) =>
+          updateDoc(doc(db, 'users', userId, 'notifications', id), { read: true, readAt: nowIso }).catch(() => {})
+        )
+      );
+    }
+  }
+}
+
+export interface CloudDismissedNotificationsState {
+  keys: string[];
+  clearedAllAt?: string | null;
+  updatedAt?: string;
+}
+
+export async function syncDismissedNotificationsToCloud(
+  userId: string,
+  keys: string[],
+  clearedAllAt?: string | null
+): Promise<void> {
+  if (!userId) return;
+  try {
+    const ref = doc(db, 'users', userId, 'notificationSettings', 'dismissed');
+    const payload: CloudDismissedNotificationsState = {
+      keys: Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0))).slice(-500),
+      clearedAllAt: clearedAllAt || null,
+      updatedAt: new Date().toISOString(),
+    };
+    await setDoc(ref, cleanForFirestore(payload), { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notificationSettings/dismissed`);
   }
 }
 
@@ -977,10 +1090,11 @@ export function subscribeToUserCloudData(
     onSavingsGoals?: (savingsGoals: SavingsGoal[], meta?: CloudSnapshotMeta) => void;
     onSavingsTransactions?: (savingsTransactions: SavingsTransaction[], meta?: CloudSnapshotMeta) => void;
     onSavingsSettings?: (savingsSettings: SavingsSettings, meta?: CloudSnapshotMeta) => void;
-    onNotifications?: (notifications: NotificationRecord[]) => void;
-    onReminders?: (reminders: ReminderDefinition[]) => void;
-    onNotificationSettings?: (settings: NotificationSettings) => void;
-    onAIBriefings?: (briefings: AIDailyBriefing[]) => void;
+    onNotifications?: (notifications: NotificationRecord[], meta?: CloudSnapshotMeta) => void;
+    onDismissedNotifications?: (state: CloudDismissedNotificationsState, meta?: CloudSnapshotMeta) => void;
+    onReminders?: (reminders: ReminderDefinition[], meta?: CloudSnapshotMeta) => void;
+    onNotificationSettings?: (settings: NotificationSettings, meta?: CloudSnapshotMeta) => void;
+    onAIBriefings?: (briefings: AIDailyBriefing[], meta?: CloudSnapshotMeta) => void;
     onSettings: (settings: UserSettings, meta?: CloudSnapshotMeta) => void;
     onDeletions?: (deletions: Map<string, string>) => void;
   }
@@ -1172,12 +1286,33 @@ export function subscribeToUserCloudData(
           snap.forEach((d) => list.push(d.data() as NotificationRecord));
           list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           if (handlers.onNotifications) {
-            handlers.onNotifications(list);
+            handlers.onNotifications(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.LIST, `users/${userId}/notifications`)
       );
       activeUnsubs.push(unsubNotifications);
+
+      const unsubDismissedNotifications = onSnapshot(
+        doc(db, 'users', userId, 'notificationSettings', 'dismissed'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          if (handlers.onDismissedNotifications) {
+            const data = snap.exists()
+              ? (snap.data() as CloudDismissedNotificationsState)
+              : { keys: [], clearedAllAt: null };
+            handlers.onDismissedNotifications(data, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        handleListenerError(OperationType.GET, `users/${userId}/notificationSettings/dismissed`)
+      );
+      activeUnsubs.push(unsubDismissedNotifications);
 
       const unsubReminders = onSnapshot(
         collection(db, 'users', userId, 'reminders'),
@@ -1186,7 +1321,10 @@ export function subscribeToUserCloudData(
           const list: ReminderDefinition[] = [];
           snap.forEach((d) => list.push(d.data() as ReminderDefinition));
           if (handlers.onReminders) {
-            handlers.onReminders(list);
+            handlers.onReminders(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.LIST, `users/${userId}/reminders`)
@@ -1198,7 +1336,10 @@ export function subscribeToUserCloudData(
         (snap) => {
           if (isUnsubscribed) return;
           if (snap.exists() && handlers.onNotificationSettings) {
-            handlers.onNotificationSettings(snap.data() as NotificationSettings);
+            handlers.onNotificationSettings(snap.data() as NotificationSettings, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.GET, `users/${userId}/notificationSettings/settings`)
@@ -1213,7 +1354,10 @@ export function subscribeToUserCloudData(
           snap.forEach((d) => list.push(d.data() as AIDailyBriefing));
           list.sort((a, b) => (b.dateKey || b.date || '').localeCompare(a.dateKey || a.date || ''));
           if (handlers.onAIBriefings) {
-            handlers.onAIBriefings(list);
+            handlers.onAIBriefings(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
           }
         },
         handleListenerError(OperationType.LIST, `users/${userId}/aiBriefings`)

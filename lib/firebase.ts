@@ -15,9 +15,11 @@ import {
   memoryLocalCache,
   enableNetwork,
   disableNetwork,
+  setLogLevel,
   collection,
   doc,
   setDoc,
+  updateDoc,
   getDocs,
   getDoc,
   deleteDoc,
@@ -34,7 +36,12 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Authentication
 export const auth = getAuth(app);
 
-// Use the isolated database specified in firebase-applet-config.json with resilient caching and ignoreUndefinedProperties
+// Suppress transient backend connection timeout warnings in embedded webviews/iframes
+try {
+  setLogLevel('error');
+} catch {}
+
+// Use the isolated database specified in firebase-applet-config.json with resilient caching, auto-detect long polling and ignoreUndefinedProperties
 const targetDatabaseId = firebaseConfig.firestoreDatabaseId;
 export const db = (() => {
   const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
@@ -44,6 +51,7 @@ export const db = (() => {
     try {
       const multiTabSettings = {
         ignoreUndefinedProperties: true,
+        experimentalAutoDetectLongPolling: true,
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager(),
         }),
@@ -56,6 +64,7 @@ export const db = (() => {
       try {
         const singleTabSettings = {
           ignoreUndefinedProperties: true,
+          experimentalAutoDetectLongPolling: true,
           localCache: persistentLocalCache({}),
         };
         return targetDatabaseId
@@ -66,6 +75,7 @@ export const db = (() => {
         try {
           const memorySettings = {
             ignoreUndefinedProperties: true,
+            experimentalAutoDetectLongPolling: true,
             localCache: memoryLocalCache(),
           };
           return targetDatabaseId
@@ -81,7 +91,7 @@ export const db = (() => {
 
   // Server-side fallback
   try {
-    const srvSettings = { ignoreUndefinedProperties: true };
+    const srvSettings = { ignoreUndefinedProperties: true, experimentalAutoDetectLongPolling: true };
     return targetDatabaseId
       ? initializeFirestore(app, srvSettings, targetDatabaseId)
       : initializeFirestore(app, srvSettings);
@@ -146,6 +156,7 @@ export {
   collection,
   doc,
   setDoc,
+  updateDoc,
   getDocs,
   getDoc,
   deleteDoc,
