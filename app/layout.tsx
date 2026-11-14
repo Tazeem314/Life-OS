@@ -66,6 +66,43 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
             __html: `
               (function() {
                 try {
+                  var fetchDesc = Object.getOwnPropertyDescriptor(window, 'fetch');
+                  if (fetchDesc && fetchDesc.get && !fetchDesc.set && fetchDesc.configurable) {
+                    var origFetchGetter = fetchDesc.get;
+                    var customFetchVal;
+                    var hasCustomFetch = false;
+                    Object.defineProperty(window, 'fetch', {
+                      configurable: true,
+                      enumerable: !!fetchDesc.enumerable,
+                      get: function() {
+                        return hasCustomFetch ? customFetchVal : origFetchGetter.call(window);
+                      },
+                      set: function(v) {
+                        customFetchVal = v;
+                        hasCustomFetch = true;
+                      }
+                    });
+                  } else if (!fetchDesc && typeof Window !== 'undefined' && Window.prototype) {
+                    var protoFetchDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+                    if (protoFetchDesc && protoFetchDesc.get && !protoFetchDesc.set) {
+                      var origProtoGetter = protoFetchDesc.get;
+                      var customProtoFetchVal;
+                      var hasCustomProtoFetch = false;
+                      Object.defineProperty(window, 'fetch', {
+                        configurable: true,
+                        enumerable: !!protoFetchDesc.enumerable,
+                        get: function() {
+                          return hasCustomProtoFetch ? customProtoFetchVal : origProtoGetter.call(window);
+                        },
+                        set: function(v) {
+                          customProtoFetchVal = v;
+                          hasCustomProtoFetch = true;
+                        }
+                      });
+                    }
+                  }
+                } catch (e) {}
+                try {
                   window.addEventListener('error', function(event) {
                     if (event && typeof event.filename === 'string' && event.filename.indexOf('chrome-extension://') === 0) {
                       event.preventDefault();
