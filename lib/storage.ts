@@ -669,7 +669,7 @@ export const Storage = {
     try {
       const uid = userId || this.getCachedUserId();
       const key = uid ? `lifeos_dismissed_notif_keys_${uid}` : 'lifeos_dismissed_notif_keys';
-      const arr = Array.from(keys).slice(-500);
+      const arr = Array.from(keys).filter((k) => typeof k === 'string' && k.length > 0).slice(-5000);
       localStorage.setItem(key, JSON.stringify(arr));
     } catch {}
   },
@@ -683,6 +683,31 @@ export const Storage = {
         if (k && typeof k === 'string') current.add(k);
       }
       this.saveDismissedNotificationKeys(current, userId);
+    } catch {}
+  },
+
+  getPendingCloudNotifPurge(userId?: string): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const uid = userId || this.getCachedUserId();
+      if (!uid) return null;
+      return localStorage.getItem(`lifeos_notif_pending_purge_${uid}`) || null;
+    } catch {
+      return null;
+    }
+  },
+
+  setPendingCloudNotifPurge(clearedAt: string | null, userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      if (!uid) return;
+      const key = `lifeos_notif_pending_purge_${uid}`;
+      if (clearedAt) {
+        localStorage.setItem(key, clearedAt);
+      } else {
+        localStorage.removeItem(key);
+      }
     } catch {}
   },
 

@@ -19,9 +19,70 @@ export interface ReminderEvaluationContext {
   customReminders?: ReminderDefinition[];
   existingNotifications?: NotificationRecord[];
   dismissedKeys?: Set<string> | string[];
+  clearedAllAt?: string | null;
   currentDateKey?: string; // "YYYY-MM-DD"
   currentTimeStr?: string; // "HH:mm"
   currentDate?: Date;
+}
+
+/**
+ * Normalizes any timestamp value (ISO string, epoch ms, or Firestore Timestamp-like object)
+ * into epoch milliseconds, returning null if missing or invalid.
+ */
+export function normalizeTimestampMs(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && /^\d+$/.test(trimmed)) {
+      return numeric;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  if (typeof value === 'object') {
+    const maybeTs = value as { toMillis?: () => number; seconds?: number; _seconds?: number };
+    if (typeof maybeTs.toMillis === 'function') {
+      try {
+        const ms = maybeTs.toMillis();
+        return Number.isFinite(ms) ? ms : null;
+      } catch {
+        return null;
+      }
+    }
+    const secs = typeof maybeTs.seconds === 'number' ? maybeTs.seconds : maybeTs._seconds;
+    if (typeof secs === 'number' && Number.isFinite(secs)) {
+      return secs * 1000;
+    }
+  }
+  return null;
+}
+
+/**
+ * Formats an epoch/Timestamp/ISO timestamp into a canonical ISO string if valid.
+ */
+export function normalizeIsoTimestamp(value: unknown, fallback?: string): string {
+  const ms = normalizeTimestampMs(value);
+  if (ms !== null) {
+    return new Date(ms).toISOString();
+  }
+  return fallback ?? '';
+}
+
+function getLocalDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getLocalTimeStr(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 /**
@@ -38,7 +99,6 @@ export function stripUserIdFromNotificationKey(key?: string, userId?: string): s
   } else if (stripped.includes('_local_user_')) {
     stripped = stripped.replace('_local_user_', '_');
   } else {
-    // Generic pattern: <prefix>_<uid_or_local_user>_<rest>
     const match = stripped.match(
       /^(task_overdue|task_due|habit_prompt|routine_morning|routine_evening|routine_weekly|goal_target|custom_rem)_([A-Za-z0-9_-]{8,}|local_user)_(.+)$/
     );
@@ -51,9 +111,8 @@ export function stripUserIdFromNotificationKey(key?: string, userId?: string): s
 }
 
 /**
- * Derives all dismissal/suppression keys associated with a notification record.
- * Storing and checking all of these prevents deleted notifications from returning
- * under different userId prefixes, legacy keys, or reminder re-evaluations.
+ * Derives canonical dismissal/suppression keys associated with a notification record.
+ * Keeping the per-notification key set compact prevents unbounded growth in storage.
  */
 export function getNotificationDismissalKeys(
   notif: Partial<NotificationRecord> & { id?: string },
@@ -64,9 +123,12 @@ export function getNotificationDismissalKeys(
 
   if (notif.id) keys.add(notif.id);
 
+  const createdMs = normalizeTimestampMs(notif.createdAt);
   const dateKey =
     fallbackDateKey ||
-    (typeof notif.createdAt === 'string' && notif.createdAt.length >= 10
+    (createdMs !== null
+      ? getLocalDateKey(new Date(createdMs))
+      : typeof notif.createdAt === 'string' && notif.createdAt.length >= 10
       ? notif.createdAt.slice(0, 10)
       : undefined);
 
@@ -75,37 +137,21 @@ export function getNotificationDismissalKeys(
   );
 
   for (const k of candidateKeys) {
-    keys.add(k);
     const stripped = stripUserIdFromNotificationKey(k, notif.userId || userId);
-    if (stripped) {
-      keys.add(`canonical:${stripped}`);
-    } else {
-      keys.add(`canonical:${k}`);
-    }
+    keys.add(stripped ? `c:${stripped}` : `c:${k}`);
+    keys.add(k);
   }
 
   const entityId = notif.relatedId || notif.sourceId;
   if (notif.category && entityId && dateKey) {
-    keys.add(`canonical:entity:${notif.category}:${entityId}:${dateKey}`);
-    keys.add(`${notif.category}_${entityId}_${dateKey}`);
-  }
-
-  if (notif.category === 'routines' && dateKey) {
-    const titleLower = (notif.title || '').toLowerCase();
-    if (titleLower.includes('morning')) {
-      keys.add(`canonical:routine_morning_${dateKey}`);
-    } else if (titleLower.includes('evening')) {
-      keys.add(`canonical:routine_evening_${dateKey}`);
-    } else if (titleLower.includes('weekly')) {
-      keys.add(`canonical:routine_weekly_${dateKey}`);
-    }
+    keys.add(`e:${notif.category}:${entityId}:${dateKey}`);
   }
 
   return Array.from(keys);
 }
 
 /**
- * Returns true if a notification matches any dismissed key or predates the Clear All watermark.
+ * Returns true if a notification matches any dismissed key or predates (or lacks timestamp under) the Clear All watermark.
  */
 export function isNotificationDismissed(
   notif: Partial<NotificationRecord> & { id?: string },
@@ -113,10 +159,11 @@ export function isNotificationDismissed(
   clearedAllAt?: string | null,
   userId?: string
 ): boolean {
-  if (clearedAllAt && notif.createdAt) {
-    const createdMs = Date.parse(notif.createdAt);
-    const clearedMs = Date.parse(clearedAllAt);
-    if (!Number.isNaN(createdMs) && !Number.isNaN(clearedMs) && createdMs <= clearedMs) {
+  const clearedMs = normalizeTimestampMs(clearedAllAt);
+  if (clearedMs !== null) {
+    const createdMs = normalizeTimestampMs(notif.createdAt);
+    // Any notification without a valid timestamp or created at/before clearedAllAt is suppressed
+    if (createdMs === null || createdMs <= clearedMs) {
       return true;
     }
   }
@@ -130,8 +177,51 @@ export function isNotificationDismissed(
 }
 
 /**
+ * Evaluates whether a trigger timestamp/schedule predates a Delete-All watermark.
+ * Ensures that after clicking "Delete All Notifications", previously triggered alerts from today
+ * stay hidden, while brand-new tasks/habits/goals/reminders created or scheduled strictly after
+ * clearedAllAt can still fire normally.
+ */
+function wasTriggerCoveredByClearAll(
+  clearedMs: number | null,
+  clearedDateKey: string | null,
+  clearedTimeStr: string | null,
+  currentDateKey: string,
+  scheduleTimeStr?: string | null,
+  sourceUpdatedAt?: unknown,
+  sourceCreatedAt?: unknown
+): boolean {
+  if (clearedMs === null || !clearedDateKey) return false;
+
+  // Only suppress same-day (or earlier) triggers; future days start fresh
+  if (currentDateKey > clearedDateKey) {
+    return false;
+  }
+
+  // If the underlying entity (task/habit/goal/reminder) was created or edited strictly AFTER clearedAllAt,
+  // allow it to evaluate as a brand-new/updated future event.
+  const updatedMs = normalizeTimestampMs(sourceUpdatedAt);
+  const createdMs = normalizeTimestampMs(sourceCreatedAt);
+  if ((updatedMs !== null && updatedMs > clearedMs) || (createdMs !== null && createdMs > clearedMs)) {
+    return false;
+  }
+
+  // If this trigger has a scheduled HH:mm strictly after clearedTimeStr on the same day,
+  // it had NOT fired yet when Delete All was clicked -> allow it when its time arrives!
+  if (scheduleTimeStr && clearedTimeStr && currentDateKey === clearedDateKey) {
+    if (scheduleTimeStr > clearedTimeStr) {
+      return false;
+    }
+  }
+
+  // Otherwise this alert was already active/eligible at or before clearedAllAt -> keep suppressed.
+  return true;
+}
+
+/**
  * Evaluates all productivity and routine conditions to determine if any new notifications should be dispatched.
- * Guarantees idempotency via stable unique idempotencyKey hashes and canonical dismissal matching.
+ * Guarantees idempotency via stable unique idempotencyKey hashes, canonical dismissal matching,
+ * and strict clearedAllAt watermark enforcement.
  */
 export function evaluateReminders(context: ReminderEvaluationContext): NotificationRecord[] {
   const settings = context.settings || DEFAULT_NOTIFICATION_SETTINGS;
@@ -148,12 +238,13 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
   const existingNotifications = context.existingNotifications || [];
 
   const now = context.currentDate || new Date();
-  const currentDateKey =
-    context.currentDateKey ||
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const currentTimeStr =
-    context.currentTimeStr ||
-    `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const currentDateKey = context.currentDateKey || getLocalDateKey(now);
+  const currentTimeStr = context.currentTimeStr || getLocalTimeStr(now);
+
+  const clearedMs = normalizeTimestampMs(context.clearedAllAt);
+  const clearedDate = clearedMs !== null ? new Date(clearedMs) : null;
+  const clearedDateKey = clearedDate ? getLocalDateKey(clearedDate) : null;
+  const clearedTimeStr = clearedDate ? getLocalTimeStr(clearedDate) : null;
 
   const existingKeys = new Set<string>();
   for (const n of existingNotifications) {
@@ -173,7 +264,6 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
   const newNotifications: NotificationRecord[] = [];
   const inQuietHours = isWithinQuietHours(currentTimeStr, settings.quietHours);
 
-  // Helper to push notification if idempotency key (or any canonical key) is not taken or previously dismissed/deleted
   const queueNotification = (
     notif: Omit<NotificationRecord, 'id' | 'userId' | 'createdAt' | 'read' | 'deliveryStatus'>,
     idempotencyKey: string
@@ -203,7 +293,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       type: notif.category,
       idempotencyKey,
       deduplicationKey: idempotencyKey,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
       read: false,
       deliveryStatus,
     });
@@ -218,37 +308,61 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
 
       // Overdue task alert: date is before today
       if (todo.date && todo.date < currentDateKey) {
-        const overdueKey = `task_overdue_${userId}_${todo.id}_${currentDateKey}`;
-        queueNotification(
-          {
-            category: 'tasks',
-            title: 'Overdue Task',
-            message: `"${todo.title}" was due on ${todo.date}. Tap to complete or reschedule.`,
-            priority: todo.priority === 'high' ? 'urgent' : 'high',
-            relatedType: 'todo',
-            relatedId: todo.id,
-            deepLink: '/?tab=todos',
-          },
-          overdueKey
-        );
+        if (
+          !wasTriggerCoveredByClearAll(
+            clearedMs,
+            clearedDateKey,
+            clearedTimeStr,
+            currentDateKey,
+            '00:00',
+            (todo as any).updatedAt,
+            (todo as any).createdAt
+          )
+        ) {
+          const overdueKey = `task_overdue_${userId}_${todo.id}_${currentDateKey}`;
+          queueNotification(
+            {
+              category: 'tasks',
+              title: 'Overdue Task',
+              message: `"${todo.title}" was due on ${todo.date}. Tap to complete or reschedule.`,
+              priority: todo.priority === 'high' ? 'urgent' : 'high',
+              relatedType: 'todo',
+              relatedId: todo.id,
+              deepLink: '/?tab=todos',
+            },
+            overdueKey
+          );
+        }
       }
 
       // Today's task with specific dueTime
       if (todo.date === currentDateKey && todo.dueTime) {
         if (todo.dueTime <= currentTimeStr) {
-          const dueKey = `task_due_${userId}_${todo.id}_${currentDateKey}_${todo.dueTime}`;
-          queueNotification(
-            {
-              category: 'tasks',
-              title: `Task Due: ${todo.title}`,
-              message: todo.notes ? `${todo.notes.slice(0, 80)}...` : 'Scheduled for right now in Life OS.',
-              priority: todo.priority === 'high' ? 'high' : 'normal',
-              relatedType: 'todo',
-              relatedId: todo.id,
-              deepLink: '/?tab=todos',
-            },
-            dueKey
-          );
+          if (
+            !wasTriggerCoveredByClearAll(
+              clearedMs,
+              clearedDateKey,
+              clearedTimeStr,
+              currentDateKey,
+              todo.dueTime,
+              (todo as any).updatedAt,
+              (todo as any).createdAt
+            )
+          ) {
+            const dueKey = `task_due_${userId}_${todo.id}_${currentDateKey}_${todo.dueTime}`;
+            queueNotification(
+              {
+                category: 'tasks',
+                title: `Task Due: ${todo.title}`,
+                message: todo.notes ? `${todo.notes.slice(0, 80)}...` : 'Scheduled for right now in Life OS.',
+                priority: todo.priority === 'high' ? 'high' : 'normal',
+                relatedType: 'todo',
+                relatedId: todo.id,
+                deepLink: '/?tab=todos',
+              },
+              dueKey
+            );
+          }
         }
       }
     }
@@ -267,10 +381,8 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
 
     for (const habit of habits) {
       if (habit.status === 'paused') continue;
-      // Skip if already completed today
       if (todayCompletions.has(habit.id)) continue;
 
-      // Check if habit is scheduled today
       let isScheduled = false;
       if (habit.frequency === 'daily') isScheduled = true;
       else if (habit.frequency === 'weekdays') isScheduled = dayOfWeek >= 1 && dayOfWeek <= 5;
@@ -282,22 +394,33 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
 
       if (!isScheduled) continue;
 
-      // Habit reminder time
       const targetTime = habit.reminderTime || '18:00';
       if (targetTime <= currentTimeStr) {
-        const habitKey = `habit_prompt_${userId}_${habit.id}_${currentDateKey}`;
-        queueNotification(
-          {
-            category: 'habits',
-            title: `Habit Check-in: ${habit.name}`,
-            message: `Keep your streak alive! Have you completed "${habit.name}" today?`,
-            priority: 'normal',
-            relatedType: 'habit',
-            relatedId: habit.id,
-            deepLink: '/?tab=habits',
-          },
-          habitKey
-        );
+        if (
+          !wasTriggerCoveredByClearAll(
+            clearedMs,
+            clearedDateKey,
+            clearedTimeStr,
+            currentDateKey,
+            targetTime,
+            (habit as any).updatedAt,
+            (habit as any).createdAt
+          )
+        ) {
+          const habitKey = `habit_prompt_${userId}_${habit.id}_${currentDateKey}`;
+          queueNotification(
+            {
+              category: 'habits',
+              title: `Habit Check-in: ${habit.name}`,
+              message: `Keep your streak alive! Have you completed "${habit.name}" today?`,
+              priority: 'normal',
+              relatedType: 'habit',
+              relatedId: habit.id,
+              deepLink: '/?tab=habits',
+            },
+            habitKey
+          );
+        }
       }
     }
   }
@@ -306,8 +429,11 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
   // 3. DAILY & WEEKLY ROUTINES
   // ==========================================
   if (settings.categories?.routines) {
-    // Morning Kick-off
-    if (currentTimeStr >= (settings.morningBriefingTime || '08:00')) {
+    const morningTime = settings.morningBriefingTime || '08:00';
+    if (
+      currentTimeStr >= morningTime &&
+      !wasTriggerCoveredByClearAll(clearedMs, clearedDateKey, clearedTimeStr, currentDateKey, morningTime)
+    ) {
       const morningKey = `routine_morning_${userId}_${currentDateKey}`;
       const uncompletedTodosCount = todos.filter((t) => t.date === currentDateKey && !t.completed).length;
       queueNotification(
@@ -327,8 +453,11 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       );
     }
 
-    // Evening Wind-down
-    if (currentTimeStr >= (settings.eveningReviewTime || '20:00')) {
+    const eveningTime = settings.eveningReviewTime || '20:00';
+    if (
+      currentTimeStr >= eveningTime &&
+      !wasTriggerCoveredByClearAll(clearedMs, clearedDateKey, clearedTimeStr, currentDateKey, eveningTime)
+    ) {
       const eveningKey = `routine_evening_${userId}_${currentDateKey}`;
       const completedToday = todos.filter((t) => t.date === currentDateKey && t.completed).length;
       queueNotification(
@@ -348,9 +477,13 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       );
     }
 
-    // Weekly Planning / Review
     const currentDayOfWeek = new Date(currentDateKey + 'T12:00:00Z').getUTCDay();
-    if (currentDayOfWeek === (settings.weeklyReviewDay ?? 0) && currentTimeStr >= (settings.weeklyReviewTime || '18:00')) {
+    const weeklyTime = settings.weeklyReviewTime || '18:00';
+    if (
+      currentDayOfWeek === (settings.weeklyReviewDay ?? 0) &&
+      currentTimeStr >= weeklyTime &&
+      !wasTriggerCoveredByClearAll(clearedMs, clearedDateKey, clearedTimeStr, currentDateKey, weeklyTime)
+    ) {
       const weeklyKey = `routine_weekly_${userId}_${currentDateKey}`;
       queueNotification(
         {
@@ -375,19 +508,31 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       if (goal.status === 'completed' || (goal.status as unknown) === 'archived') continue;
       const targetDate = (goal as any).targetDate || goal.deadline;
       if (targetDate && targetDate === currentDateKey) {
-        const goalKey = `goal_target_${userId}_${goal.id}_${currentDateKey}`;
-        queueNotification(
-          {
-            category: 'goals_savings',
-            title: `Goal Target Date: ${goal.title}`,
-            message: `Today is the target completion date for "${goal.title}". Check your roadmaps and milestone progress.`,
-            priority: 'high',
-            relatedType: 'goal',
-            relatedId: goal.id,
-            deepLink: '/?tab=goals',
-          },
-          goalKey
-        );
+        if (
+          !wasTriggerCoveredByClearAll(
+            clearedMs,
+            clearedDateKey,
+            clearedTimeStr,
+            currentDateKey,
+            '00:00',
+            (goal as any).updatedAt,
+            (goal as any).createdAt
+          )
+        ) {
+          const goalKey = `goal_target_${userId}_${goal.id}_${currentDateKey}`;
+          queueNotification(
+            {
+              category: 'goals_savings',
+              title: `Goal Target Date: ${goal.title}`,
+              message: `Today is the target completion date for "${goal.title}". Check your roadmaps and milestone progress.`,
+              priority: 'high',
+              relatedType: 'goal',
+              relatedId: goal.id,
+              deepLink: '/?tab=goals',
+            },
+            goalKey
+          );
+        }
       }
     }
   }
@@ -414,19 +559,31 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
 
       const targetTime = rem.targetTime || rem.timeOfDay;
       if (isDueToday && targetTime && targetTime <= currentTimeStr) {
-        const customKey = `custom_rem_${userId}_${rem.id}_${currentDateKey}_${targetTime}`;
-        queueNotification(
-          {
-            category: 'custom',
-            title: rem.title,
-            message: rem.message || 'Custom reminder triggered from Life OS.',
-            priority: 'normal',
-            relatedType: 'routine',
-            relatedId: rem.id,
-            deepLink: rem.deepLink || '/?tab=notifications',
-          },
-          customKey
-        );
+        if (
+          !wasTriggerCoveredByClearAll(
+            clearedMs,
+            clearedDateKey,
+            clearedTimeStr,
+            currentDateKey,
+            targetTime,
+            rem.updatedAt,
+            rem.createdAt
+          )
+        ) {
+          const customKey = `custom_rem_${userId}_${rem.id}_${currentDateKey}_${targetTime}`;
+          queueNotification(
+            {
+              category: 'custom',
+              title: rem.title,
+              message: rem.message || 'Custom reminder triggered from Life OS.',
+              priority: 'normal',
+              relatedType: 'routine',
+              relatedId: rem.id,
+              deepLink: rem.deepLink || '/?tab=notifications',
+            },
+            customKey
+          );
+        }
       }
     }
   }

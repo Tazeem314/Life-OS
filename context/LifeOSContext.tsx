@@ -639,6 +639,8 @@ import {
   flushPendingCloudWrites,
   getPendingWriteIds,
   removePendingWrite,
+  queuePendingWrite,
+  isOfflineFirestoreError,
   syncNotificationToCloud,
   updateNotificationInCloud,
   deleteNotificationFromCloud,
@@ -663,13 +665,16 @@ import {
   pruneExpiredNotifications,
   playNotificationSound,
   requestAIDailyBriefing,
+  createNotificationsBackupJson,
 } from '@/lib/notification-service';
 import {
   evaluateAllReminders,
   ReminderEvaluationContext,
   getNotificationDismissalKeys,
   isNotificationDismissed,
+  normalizeTimestampMs,
 } from '@/lib/reminder-engine';
+import { recordNotificationDiagnostic } from '@/lib/notification-diagnostics';
 import firebaseConfig from '@/firebase-applet-config.json';
 
 interface LifeOSContextType {
@@ -791,6 +796,7 @@ interface LifeOSContextType {
   // Notification State & Operations
   notifications: NotificationRecord[];
   unreadNotificationsCount: number;
+  isDeletingNotifications: boolean;
   customReminders: ReminderDefinition[];
   notificationSettings: NotificationSettings;
   aiBriefings: AIDailyBriefing[];
@@ -799,6 +805,7 @@ interface LifeOSContextType {
   deleteNotification: (id: string) => Promise<void>;
   clearAllReadNotifications: () => Promise<void>;
   clearAllNotifications: () => Promise<void>;
+  exportNotificationsBackup: () => void;
   snoozeNotification: (id: string, minutes: number) => Promise<void>;
   dispatchNotification: (notif: Omit<NotificationRecord, 'id' | 'createdAt'>) => Promise<NotificationRecord>;
   createReminder: (reminder: Omit<ReminderDefinition, 'id' | 'createdAt' | 'updatedAt'>) => Promise<ReminderDefinition>;
@@ -836,6 +843,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   // Notification state
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [isDeletingNotifications, setIsDeletingNotifications] = useState<boolean>(false);
   const [customReminders, setCustomReminders] = useState<ReminderDefinition[]>([]);
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(DEFAULT_NOTIFICATION_SETTINGS);
   const [aiBriefings, setAIBriefings] = useState<AIDailyBriefing[]>([]);
@@ -868,6 +876,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const cloudNotifsHydratedRef = useRef<boolean>(false);
   const cloudDismissedHydratedRef = useRef<boolean>(false);
   const notifDeleteInFlightRef = useRef<boolean>(false);
+  const notifMutationEpochRef = useRef<number>(0);
+  const orphanSweepInFlightRef = useRef<boolean>(false);
+  const isEvaluatingHeartbeatRef = useRef<boolean>(false);
+  const initialSessionHeartbeatDoneRef = useRef<boolean>(false);
+  const lastHeartbeatRunAtRef = useRef<number>(0);
+  const heartbeatDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const evaluateHeartbeatRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => { userRef.current = user; }, [user]);
@@ -1020,20 +1034,29 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   // Firebase Auth State Listener & Immediate Real-time Cloud Sync
   useEffect(() => {
+    let isEffectActive = true;
+    let authGeneration = 0;
     let unsubscribeFirestore: (() => void) | null = null;
     let subscribedUid: string | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      if (!isEffectActive) return;
+      const gen = ++authGeneration;
       authResolvedRef.current = true;
       setUser(currentUser);
       userRef.current = currentUser;
       setAuthLoading(false);
 
+      if (heartbeatDebounceTimerRef.current) {
+        clearTimeout(heartbeatDebounceTimerRef.current);
+        heartbeatDebounceTimerRef.current = null;
+      }
+
       if (currentUser) {
         const cachedUid = Storage.getCachedUserId();
         const lastSignOutUid = typeof window !== 'undefined' ? localStorage.getItem('lifeos_last_signed_out_uid') : null;
         const isAccountSwitch = (cachedUid && cachedUid !== currentUser.uid) || (lastSignOutUid && lastSignOutUid !== currentUser.uid);
-        let isAccountSwitchActive = isAccountSwitch;
+        const isAccountSwitchActive = isAccountSwitch;
 
         // Always purge un-scoped guest notification storage when signed in so guest alerts never leak into Gmail accounts
         Storage.clearGuestNotificationStorage();
@@ -1075,11 +1098,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           cloudNotifsHydratedRef.current = false;
           cloudDismissedHydratedRef.current = false;
           notifDeleteInFlightRef.current = false;
+          orphanSweepInFlightRef.current = false;
+          initialSessionHeartbeatDoneRef.current = false;
+          setIsDeletingNotifications(false);
         }
 
-        // Load this specific Gmail user's local dismissal keys and watermark immediately
+        // Load this specific Gmail user's local dismissal keys and latest watermark immediately
         dismissedNotifKeysRef.current = Storage.getDismissedNotificationKeys(currentUser.uid);
-        notificationsClearedAtRef.current = Storage.getNotificationsClearedAt(currentUser.uid);
+        const storedCleared = Storage.getNotificationsClearedAt(currentUser.uid);
+        const pendingPurge = Storage.getPendingCloudNotifPurge(currentUser.uid);
+        const storedClearedMs = normalizeTimestampMs(storedCleared) ?? 0;
+        const pendingPurgeMs = normalizeTimestampMs(pendingPurge) ?? 0;
+        notificationsClearedAtRef.current =
+          pendingPurgeMs > storedClearedMs ? pendingPurge : storedCleared || pendingPurge;
 
         Storage.setCachedUserId(currentUser.uid);
         if (typeof window !== 'undefined') {
@@ -1093,11 +1124,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         subscribedUid = currentUser.uid;
         cloudNotifsHydratedRef.current = false;
         cloudDismissedHydratedRef.current = false;
+        initialSessionHeartbeatDoneRef.current = false;
 
         // 1. Immediately subscribe to real-time updates from Firestore with non-destructive merge
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
+          unsubscribeFirestore = null;
         }
+
+        recordNotificationDiagnostic({
+          event: 'auth_subscribe_attach',
+          gen,
+        });
 
         unsubscribeFirestore = subscribeToUserCloudData(currentUser.uid, {
           onDeletions: (map) => {
@@ -1326,6 +1364,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             Storage.saveSavingsSettings(merged);
           },
           onDismissedNotifications: (cloudDismissed, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             cloudDismissedHydratedRef.current = true;
             const mergedKeys = new Set<string>([
               ...Array.from(dismissedNotifKeysRef.current),
@@ -1336,11 +1375,19 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             Storage.saveDismissedNotificationKeys(mergedKeys, currentUser.uid);
 
             const localCleared = notificationsClearedAtRef.current || Storage.getNotificationsClearedAt(currentUser.uid);
+            const pendingPurge = Storage.getPendingCloudNotifPurge(currentUser.uid);
             const cloudCleared = cloudDismissed?.clearedAllAt || null;
-            let latestCleared: string | null = localCleared;
-            if (cloudCleared && (!latestCleared || Date.parse(cloudCleared) > Date.parse(latestCleared))) {
-              latestCleared = cloudCleared;
+
+            let latestCleared: string | null = null;
+            let latestMs = -1;
+            for (const candidate of [localCleared, pendingPurge, cloudCleared]) {
+              const ms = normalizeTimestampMs(candidate);
+              if (candidate && ms !== null && ms > latestMs) {
+                latestMs = ms;
+                latestCleared = candidate;
+              }
             }
+
             notificationsClearedAtRef.current = latestCleared;
             Storage.setNotificationsClearedAt(latestCleared, currentUser.uid);
 
@@ -1359,24 +1406,41 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
                 notificationsRef.current = kept;
                 setNotifications(kept);
                 Storage.saveNotifications(kept, currentUser.uid);
-                if (!meta?.fromCache && !meta?.hasPendingWrites && !notifDeleteInFlightRef.current) {
-                  deleteNotificationsBatchFromCloud(currentUser.uid, staleIds).catch(() => {});
+                if (!meta?.fromCache && !meta?.hasPendingWrites && !notifDeleteInFlightRef.current && !orphanSweepInFlightRef.current) {
+                  orphanSweepInFlightRef.current = true;
+                  deleteNotificationsBatchFromCloud(currentUser.uid, staleIds)
+                    .catch(() => {})
+                    .finally(() => {
+                      orphanSweepInFlightRef.current = false;
+                    });
                 }
               }
             }
 
-            if (cloudNotifsHydratedRef.current) {
-              setTimeout(() => {
+            if (!initialSessionHeartbeatDoneRef.current && cloudNotifsHydratedRef.current && !notifDeleteInFlightRef.current) {
+              initialSessionHeartbeatDoneRef.current = true;
+              if (heartbeatDebounceTimerRef.current) clearTimeout(heartbeatDebounceTimerRef.current);
+              heartbeatDebounceTimerRef.current = setTimeout(() => {
+                heartbeatDebounceTimerRef.current = null;
                 evaluateHeartbeatRef.current().catch(() => {});
-              }, 300);
+              }, 800);
             }
           },
           onNotifications: (cloudNotifs, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             if (!cloudNotifs) return;
             cloudNotifsHydratedRef.current = true;
 
             // Ignore intermediate snapshot churn while a bulk/single delete batch is in-flight
             if (notifDeleteInFlightRef.current) {
+              recordNotificationDiagnostic({
+                event: 'snapshot_ignored_delete_in_flight',
+                count: cloudNotifs.length,
+                fromCache: meta?.fromCache,
+                hasPendingWrites: meta?.hasPendingWrites,
+                gen,
+                epoch: notifMutationEpochRef.current,
+              });
               return;
             }
 
@@ -1386,7 +1450,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
               ...Array.from(Storage.getDismissedNotificationKeys(currentUser.uid)),
             ]);
             dismissedNotifKeysRef.current = dismissed;
-            const clearedAt = notificationsClearedAtRef.current || Storage.getNotificationsClearedAt(currentUser.uid);
+            const clearedAt =
+              notificationsClearedAtRef.current ||
+              Storage.getNotificationsClearedAt(currentUser.uid) ||
+              Storage.getPendingCloudNotifPurge(currentUser.uid);
 
             const cloudIdSet = new Set(cloudNotifs.map((n) => n.id));
             if (isAuthoritative && pendingDeletedNotifIdsRef.current.size > 0) {
@@ -1398,6 +1465,8 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             }
 
             const kept: NotificationRecord[] = [];
+            const seenIds = new Set<string>();
+            const seenIdempotencyKeys = new Set<string>();
             const orphansToDelete: string[] = [];
 
             for (const n of cloudNotifs) {
@@ -1410,32 +1479,64 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
                 if (isAuthoritative) orphansToDelete.push(n.id);
                 continue;
               }
+              if (seenIds.has(n.id)) {
+                continue;
+              }
+              const dedupKey = n.idempotencyKey || n.deduplicationKey;
+              if (dedupKey) {
+                if (seenIdempotencyKeys.has(dedupKey)) {
+                  if (isAuthoritative) orphansToDelete.push(n.id);
+                  continue;
+                }
+                seenIdempotencyKeys.add(dedupKey);
+              }
+              seenIds.add(n.id);
               kept.push(n);
             }
 
-            // Silently purge any leftover orphaned/dismissed cloud notification docs
-            if (isAuthoritative && orphansToDelete.length > 0) {
+            // Silently purge any leftover orphaned/dismissed cloud notification docs using single-flight sweep
+            if (isAuthoritative && orphansToDelete.length > 0 && !orphanSweepInFlightRef.current) {
+              orphanSweepInFlightRef.current = true;
               orphansToDelete.forEach((oid) => pendingDeletedNotifIdsRef.current.add(oid));
-              deleteNotificationsBatchFromCloud(currentUser.uid, orphansToDelete).catch(() => {});
+              recordNotificationDiagnostic({
+                event: 'snapshot_orphan_sweep',
+                count: orphansToDelete.length,
+                gen,
+              });
+              deleteNotificationsBatchFromCloud(currentUser.uid, orphansToDelete)
+                .catch(() => {})
+                .finally(() => {
+                  orphanSweepInFlightRef.current = false;
+                });
+            }
+
+            // If a prior offline clearAll purge was pending and server is now clean of pre-clear docs, clear pending flag
+            if (isAuthoritative && Storage.getPendingCloudNotifPurge(currentUser.uid) && orphansToDelete.length === 0) {
+              Storage.setPendingCloudNotifPurge(null, currentUser.uid);
             }
 
             setNotifications(kept);
             notificationsRef.current = kept;
             Storage.saveNotifications(kept, currentUser.uid);
 
-            if (cloudDismissedHydratedRef.current) {
-              setTimeout(() => {
+            if (!initialSessionHeartbeatDoneRef.current && cloudDismissedHydratedRef.current && !notifDeleteInFlightRef.current) {
+              initialSessionHeartbeatDoneRef.current = true;
+              if (heartbeatDebounceTimerRef.current) clearTimeout(heartbeatDebounceTimerRef.current);
+              heartbeatDebounceTimerRef.current = setTimeout(() => {
+                heartbeatDebounceTimerRef.current = null;
                 evaluateHeartbeatRef.current().catch(() => {});
-              }, 300);
+              }, 800);
             }
           },
           onReminders: (cloudReminders) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             if (!cloudReminders) return;
             setCustomReminders(cloudReminders);
             customRemindersRef.current = cloudReminders;
             Storage.saveReminders(cloudReminders, currentUser.uid);
           },
           onNotificationSettings: (cloudSettings) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             if (!cloudSettings) return;
             const merged = { ...DEFAULT_NOTIFICATION_SETTINGS, ...cloudSettings };
             setNotificationSettings(merged);
@@ -1443,6 +1544,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             Storage.saveNotificationSettings(merged, currentUser.uid);
           },
           onAIBriefings: (cloudBriefings) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             if (!cloudBriefings) return;
             setAIBriefings(cloudBriefings);
             aiBriefingsRef.current = cloudBriefings;
@@ -1458,6 +1560,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         cloudNotifsHydratedRef.current = false;
         cloudDismissedHydratedRef.current = false;
         notifDeleteInFlightRef.current = false;
+        orphanSweepInFlightRef.current = false;
+        initialSessionHeartbeatDoneRef.current = false;
+        setIsDeletingNotifications(false);
         pendingDeletedNotifIdsRef.current.clear();
         dismissedNotifKeysRef.current.clear();
         notificationsClearedAtRef.current = null;
@@ -1645,10 +1750,17 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener('offline', handleOffline);
 
     return () => {
+      isEffectActive = false;
+      authGeneration++;
       clearInterval(livePollTimer);
+      if (heartbeatDebounceTimerRef.current) {
+        clearTimeout(heartbeatDebounceTimerRef.current);
+        heartbeatDebounceTimerRef.current = null;
+      }
       unsubscribeAuth();
       if (unsubscribeFirestore) {
         unsubscribeFirestore();
+        unsubscribeFirestore = null;
       }
       bc?.close();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -1790,6 +1902,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       cloudNotifsHydratedRef.current = false;
       cloudDismissedHydratedRef.current = false;
       notifDeleteInFlightRef.current = false;
+      orphanSweepInFlightRef.current = false;
+      initialSessionHeartbeatDoneRef.current = false;
+      setIsDeletingNotifications(false);
       pendingDeletedNotifIdsRef.current.clear();
       dismissedNotifKeysRef.current.clear();
       notificationsClearedAtRef.current = null;
@@ -3834,11 +3949,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     Storage.saveNotifications(updated, uid);
 
     if (uid) {
-      await updateNotificationInCloud(uid, id, { read: true, readAt: now });
+      await updateNotificationInCloud(uid, id, { read: true, readAt: now }).catch(() => {});
     }
   }, []);
 
   const markAllNotificationsAsRead = useCallback(async () => {
+    if (notifDeleteInFlightRef.current) return;
     const uid = userRef.current?.uid;
     const now = new Date().toISOString();
     const currentList = notificationsRef.current;
@@ -3847,6 +3963,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       .map((n) => n.id);
     if (unreadIds.length === 0) return;
 
+    const myEpoch = notifMutationEpochRef.current;
     const updated = currentList.map((n) =>
       n.read ? n : { ...n, read: true, readAt: n.readAt || now }
     );
@@ -3855,7 +3972,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     Storage.saveNotifications(updated, uid);
 
     if (uid) {
-      await markAllNotificationsReadInCloud(uid, unreadIds);
+      await markAllNotificationsReadInCloud(
+        uid,
+        unreadIds,
+        () => notifDeleteInFlightRef.current || notifMutationEpochRef.current !== myEpoch
+      );
     }
   }, []);
 
@@ -3864,6 +3985,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     const today = getTodayKey();
     const target = notificationsRef.current.find((n) => n.id === id);
 
+    notifMutationEpochRef.current += 1;
     pendingDeletedNotifIdsRef.current.add(id);
     const keysToDismiss = getNotificationDismissalKeys(target || { id }, uid, today);
     for (const k of keysToDismiss) {
@@ -3885,19 +4007,48 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           notificationsClearedAtRef.current
         );
         await deleteNotificationFromCloud(uid, id);
+      } catch (err) {
+        if (isOfflineFirestoreError(err)) {
+          queuePendingWrite(
+            {
+              type: 'notifications_delete_batch',
+              id: `notif_del_${id}`,
+              data: {
+                ids: [id],
+                keys: Array.from(dismissedNotifKeysRef.current).slice(-200),
+                clearedAllAt: notificationsClearedAtRef.current,
+              },
+              timestamp: Date.now(),
+            },
+            uid
+          );
+          showToast({
+            title: 'Deleted Locally (Offline)',
+            message: 'Cloud deletion is queued and will complete automatically when online.',
+            type: 'info',
+          });
+        } else {
+          showToast({
+            title: 'Cloud Delete Failed',
+            message: 'Could not delete notification from cloud storage. Please retry.',
+            type: 'error',
+          });
+        }
       } finally {
         notifDeleteInFlightRef.current = false;
       }
     }
-  }, []);
+  }, [showToast]);
 
   const clearAllReadNotifications = useCallback(async () => {
+    if (notifDeleteInFlightRef.current) return;
     const uid = userRef.current?.uid;
     const today = getTodayKey();
     const currentList = notificationsRef.current;
     const readItems = currentList.filter((n) => n.read);
     if (readItems.length === 0) return;
 
+    notifMutationEpochRef.current += 1;
     const readIds = readItems.map((n) => n.id);
     const readIdSet = new Set(readIds);
     for (const item of readItems) {
@@ -3915,6 +4066,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
     if (uid) {
       notifDeleteInFlightRef.current = true;
+      setIsDeletingNotifications(true);
       try {
         await syncDismissedNotificationsToCloud(
           uid,
@@ -3922,25 +4074,62 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           notificationsClearedAtRef.current
         );
         await deleteNotificationsBatchFromCloud(uid, readIds);
+        showToast({
+          title: 'Notifications Cleared',
+          message: `${readItems.length} read notification${readItems.length > 1 ? 's' : ''} permanently removed`,
+          type: 'info',
+        });
+      } catch (err) {
+        if (isOfflineFirestoreError(err)) {
+          queuePendingWrite(
+            {
+              type: 'notifications_delete_batch',
+              id: `notif_del_read_${Date.now()}`,
+              data: {
+                ids: readIds,
+                keys: Array.from(dismissedNotifKeysRef.current).slice(-500),
+                clearedAllAt: notificationsClearedAtRef.current,
+              },
+              timestamp: Date.now(),
+            },
+            uid
+          );
+          showToast({
+            title: 'Cleared Locally (Offline)',
+            message: `${readItems.length} notification${readItems.length > 1 ? 's' : ''} hidden offline and queued for cloud removal.`,
+            type: 'info',
+          });
+        } else {
+          showToast({
+            title: 'Cloud Clear Failed',
+            message: 'Could not confirm removal of all read notifications in the cloud.',
+            type: 'error',
+          });
+        }
       } finally {
         notifDeleteInFlightRef.current = false;
+        setIsDeletingNotifications(false);
       }
+    } else {
+      showToast({
+        title: 'Notifications Cleared',
+        message: `${readItems.length} read notification${readItems.length > 1 ? 's' : ''} removed`,
+        type: 'info',
+      });
     }
-
-    showToast({
-      title: 'Notifications Cleared',
-      message: `${readItems.length} read notification${readItems.length > 1 ? 's' : ''} removed`,
-      type: 'info',
-    });
   }, [showToast]);
 
   const clearAllNotifications = useCallback(async () => {
+    if (notifDeleteInFlightRef.current) return;
     const uid = userRef.current?.uid;
     const today = getTodayKey();
     const currentList = notificationsRef.current;
     const allIds = currentList.map((n) => n.id);
 
-    const clearedAt = new Date().toISOString();
+    const myEpoch = ++notifMutationEpochRef.current;
+    const prevClearedMs = normalizeTimestampMs(notificationsClearedAtRef.current) ?? 0;
+    const clearedAt = new Date(Math.max(Date.now(), prevClearedMs + 1)).toISOString();
+
     notificationsClearedAtRef.current = clearedAt;
     Storage.setNotificationsClearedAt(clearedAt, uid);
 
@@ -3956,25 +4145,104 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setNotifications([]);
     Storage.saveNotifications([], uid);
 
+    recordNotificationDiagnostic({
+      event: 'clear_all_started',
+      count: allIds.length,
+      epoch: myEpoch,
+    });
+
     if (uid) {
       notifDeleteInFlightRef.current = true;
+      setIsDeletingNotifications(true);
+      Storage.setPendingCloudNotifPurge(clearedAt, uid);
       try {
         await syncDismissedNotificationsToCloud(
           uid,
           Array.from(dismissedNotifKeysRef.current),
           clearedAt
         );
-        await deleteAllNotificationsFromCloud(uid, allIds);
+        const purgeResult = await deleteAllNotificationsFromCloud(uid, allIds, clearedAt);
+        if (purgeResult.verifiedEmpty) {
+          Storage.setPendingCloudNotifPurge(null, uid);
+          if (myEpoch === notifMutationEpochRef.current) {
+            pendingDeletedNotifIdsRef.current.clear();
+          }
+          showToast({
+            title: 'All Notifications Cleared',
+            message: `${Math.max(allIds.length, purgeResult.deletedCount)} notification${Math.max(allIds.length, purgeResult.deletedCount) === 1 ? '' : 's'} permanently removed from cloud & device.`,
+            type: 'info',
+          });
+        } else {
+          showToast({
+            title: 'Cloud Verification Pending',
+            message: 'Notifications are hidden locally; cloud verification did not complete.',
+            type: 'error',
+          });
+        }
+      } catch (err) {
+        if (isOfflineFirestoreError(err)) {
+          queuePendingWrite(
+            {
+              type: 'notifications_clear_all',
+              id: 'notifications_clear_all',
+              data: {
+                clearedAt,
+                keys: Array.from(dismissedNotifKeysRef.current).slice(-500),
+              },
+              timestamp: Date.now(),
+            },
+            uid
+          );
+          showToast({
+            title: 'Cleared Locally (Offline)',
+            message: 'Cloud purge is queued and will run automatically when connection returns.',
+            type: 'info',
+          });
+        } else {
+          showToast({
+            title: 'Cloud Clear Failed',
+            message: 'Some cloud notifications could not be removed. They remain hidden and can be retried.',
+            type: 'error',
+          });
+        }
       } finally {
         notifDeleteInFlightRef.current = false;
+        setIsDeletingNotifications(false);
       }
+    } else {
+      showToast({
+        title: 'All Notifications Cleared',
+        message: 'All notifications have been removed',
+        type: 'info',
+      });
     }
+  }, [showToast]);
 
-    showToast({
-      title: 'All Notifications Cleared',
-      message: 'All notifications have been removed',
-      type: 'info',
-    });
+  const exportNotificationsBackup = useCallback(() => {
+    try {
+      const currentList = notificationsRef.current || [];
+      const json = createNotificationsBackupJson(currentList);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `lifeos-notifications-backup-${getTodayKey()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast({
+        title: 'Backup Downloaded',
+        message: `Exported ${currentList.length} notification record${currentList.length === 1 ? '' : 's'} to JSON.`,
+        type: 'success',
+      });
+    } catch {
+      showToast({
+        title: 'Backup Export Failed',
+        message: 'Could not create the JSON backup file.',
+        type: 'error',
+      });
+    }
   }, [showToast]);
 
   const snoozeNotification = useCallback(async (id: string, minutes: number) => {
@@ -3989,7 +4257,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     Storage.saveNotifications(updated, uid);
 
     if (uid) {
-      await updateNotificationInCloud(uid, id, { snoozeUntil });
+      await updateNotificationInCloud(uid, id, { snoozeUntil }).catch(() => {});
     }
     showToast({
       title: 'Reminder Snoozed',
@@ -4001,11 +4269,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const dispatchNotification = useCallback(async (notifInput: Omit<NotificationRecord, 'id' | 'createdAt'>) => {
     const uid = userRef.current?.uid;
     const id = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const prevClearedMs = normalizeTimestampMs(notificationsClearedAtRef.current) ?? 0;
+    const createdAt = new Date(Math.max(Date.now(), prevClearedMs + 1)).toISOString();
     const newNotif: NotificationRecord = {
       ...notifInput,
       userId: notifInput.userId || uid,
       id,
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
 
     const current = notificationsRef.current;
@@ -4013,14 +4283,14 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       (newNotif.idempotencyKey && current.some((n) => n.idempotencyKey === newNotif.idempotencyKey)) ||
       (newNotif.deduplicationKey && current.some((n) => n.deduplicationKey === newNotif.deduplicationKey));
 
-    if (!isDuplicate && !isNotificationDismissed(newNotif, dismissedNotifKeysRef.current, null, uid)) {
+    if (!isDuplicate && !isNotificationDismissed(newNotif, dismissedNotifKeysRef.current, notificationsClearedAtRef.current, uid)) {
       const updated = [newNotif, ...current];
       notificationsRef.current = updated;
       setNotifications(updated);
       Storage.saveNotifications(updated, uid);
 
       if (uid) {
-        syncNotificationToCloud(uid, newNotif);
+        syncNotificationToCloud(uid, newNotif).catch(() => {});
       }
 
       const currentSettings = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
@@ -4158,6 +4428,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         syncAIBriefingToCloud(uid, result.briefing);
       }
 
+      const prevClearedMs = normalizeTimestampMs(notificationsClearedAtRef.current) ?? 0;
       const briefingNotif: NotificationRecord = {
         id: `briefing_notif_${Date.now()}`,
         userId: uid,
@@ -4172,7 +4443,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         sourceId: result.briefing.id,
         idempotencyKey: `ai_briefing_${today}`,
         deduplicationKey: `ai_briefing_${today}`,
-        createdAt: new Date().toISOString(),
+        createdAt: forceRefresh
+          ? new Date(Math.max(Date.now(), prevClearedMs + 1)).toISOString()
+          : new Date().toISOString(),
       };
 
       const alreadyPresent = notificationsRef.current.some(
@@ -4180,7 +4453,9 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           n.idempotencyKey === briefingNotif.idempotencyKey ||
           n.deduplicationKey === briefingNotif.deduplicationKey
       );
-      const wasDismissed = !forceRefresh && isNotificationDismissed(briefingNotif, dismissedNotifKeysRef.current, null, uid);
+      const wasDismissed =
+        !forceRefresh &&
+        isNotificationDismissed(briefingNotif, dismissedNotifKeysRef.current, notificationsClearedAtRef.current, uid);
 
       if (!alreadyPresent && !wasDismissed) {
         const updatedNotifs = [briefingNotif, ...notificationsRef.current];
@@ -4189,7 +4464,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         Storage.saveNotifications(updatedNotifs, uid);
 
         if (uid) {
-          syncNotificationToCloud(uid, briefingNotif);
+          syncNotificationToCloud(uid, briefingNotif).catch(() => {});
         }
       }
 
@@ -4206,79 +4481,102 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   }, [savingsAnalytics, showToast]);
 
   const evaluateNotificationHeartbeat = useCallback(async () => {
-    // Wait until Firebase auth has resolved and, if signed in, cloud notifications & dismissed keys are hydrated
     if (!authResolvedRef.current) return;
     const currentUser = userRef.current;
     if (currentUser && (!cloudNotifsHydratedRef.current || !cloudDismissedHydratedRef.current)) {
       return;
     }
-    if (notifDeleteInFlightRef.current) return;
+    if (notifDeleteInFlightRef.current || isEvaluatingHeartbeatRef.current) return;
 
-    const uid = currentUser?.uid;
-    const currentSettings = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
-    if (currentSettings.enabled === false && !currentSettings.inAppEnabled && !currentSettings.pushEnabled) {
+    const nowMs = Date.now();
+    if (nowMs - lastHeartbeatRunAtRef.current < 2500) {
       return;
     }
 
-    const now = new Date();
-    const currentDateKey = getTodayKey();
-    const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const dismissedKeys = new Set<string>([
-      ...Array.from(dismissedNotifKeysRef.current),
-      ...Array.from(Storage.getDismissedNotificationKeys(uid)),
-    ]);
+    isEvaluatingHeartbeatRef.current = true;
+    lastHeartbeatRunAtRef.current = nowMs;
 
-    const ctx: ReminderEvaluationContext = {
-      userId: uid || 'local_user',
-      settings: currentSettings,
-      todos: todosRef.current || [],
-      tasks: todosRef.current || [],
-      habits: habitsRef.current || [],
-      habitCompletions: completionsRef.current || [],
-      goals: goalsRef.current || [],
-      customReminders: customRemindersRef.current || [],
-      existingNotifications: notificationsRef.current || [],
-      dismissedKeys,
-      currentDateKey,
-      currentTimeStr,
-      currentDate: now,
-    };
+    try {
+      const uid = currentUser?.uid;
+      const currentSettings = notificationSettingsRef.current || DEFAULT_NOTIFICATION_SETTINGS;
+      if (currentSettings.enabled === false && !currentSettings.inAppEnabled && !currentSettings.pushEnabled) {
+        return;
+      }
 
-    const newReminders = evaluateAllReminders(ctx);
-    if (!newReminders || newReminders.length === 0) return;
+      const now = new Date();
+      const currentDateKey = getTodayKey();
+      const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const dismissedKeys = new Set<string>([
+        ...Array.from(dismissedNotifKeysRef.current),
+        ...Array.from(Storage.getDismissedNotificationKeys(uid)),
+      ]);
+      const clearedAllAt =
+        notificationsClearedAtRef.current ||
+        Storage.getNotificationsClearedAt(uid) ||
+        Storage.getPendingCloudNotifPurge(uid);
 
-    const validReminders = newReminders.filter(
-      (n) =>
-        !pendingDeletedNotifIdsRef.current.has(n.id) &&
-        !isNotificationDismissed(n, dismissedKeys, null, uid)
-    );
-    if (validReminders.length === 0) return;
+      const ctx: ReminderEvaluationContext = {
+        userId: uid || 'local_user',
+        settings: currentSettings,
+        todos: todosRef.current || [],
+        tasks: todosRef.current || [],
+        habits: habitsRef.current || [],
+        habitCompletions: completionsRef.current || [],
+        goals: goalsRef.current || [],
+        customReminders: customRemindersRef.current || [],
+        existingNotifications: notificationsRef.current || [],
+        dismissedKeys,
+        clearedAllAt,
+        currentDateKey,
+        currentTimeStr,
+        currentDate: now,
+      };
 
-    const merged = [...validReminders, ...notificationsRef.current];
-    const pruned = pruneExpiredNotifications(merged, 30);
-    notificationsRef.current = pruned;
-    setNotifications(pruned);
-    Storage.saveNotifications(pruned, uid);
+      const newReminders = evaluateAllReminders(ctx);
+      if (!newReminders || newReminders.length === 0) return;
 
-    if (uid) {
-      validReminders.forEach((n) => syncNotificationToCloud(uid, n));
-    }
+      const validReminders = newReminders.filter(
+        (n) =>
+          !pendingDeletedNotifIdsRef.current.has(n.id) &&
+          !isNotificationDismissed(n, dismissedKeys, clearedAllAt, uid)
+      );
+      if (validReminders.length === 0) return;
 
-    if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
-      playNotificationSound();
-    }
+      recordNotificationDiagnostic({
+        event: 'heartbeat_generated',
+        count: validReminders.length,
+      });
 
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        const topNotif = validReminders[0];
-        if (document.hidden && topNotif) {
-          new Notification(topNotif.title, {
-            body: topNotif.message,
-            icon: '/icon-192.png',
-            tag: topNotif.idempotencyKey || topNotif.deduplicationKey,
-          });
-        }
-      } catch {}
+      const merged = [...validReminders, ...notificationsRef.current];
+      const pruned = pruneExpiredNotifications(merged, 30);
+      notificationsRef.current = pruned;
+      setNotifications(pruned);
+      Storage.saveNotifications(pruned, uid);
+
+      if (uid) {
+        validReminders.forEach((n) => {
+          syncNotificationToCloud(uid, n).catch(() => {});
+        });
+      }
+
+      if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
+        playNotificationSound();
+      }
+
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          const topNotif = validReminders[0];
+          if (document.hidden && topNotif) {
+            new Notification(topNotif.title, {
+              body: topNotif.message,
+              icon: '/icon-192.png',
+              tag: topNotif.idempotencyKey || topNotif.deduplicationKey,
+            });
+          }
+        } catch {}
+      }
+    } finally {
+      isEvaluatingHeartbeatRef.current = false;
     }
   }, []);
 
@@ -4413,6 +4711,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     // Notifications & Reminders
     notifications,
     unreadNotificationsCount,
+    isDeletingNotifications,
     customReminders,
     notificationSettings,
     aiBriefings,
@@ -4421,6 +4720,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     deleteNotification,
     clearAllReadNotifications,
     clearAllNotifications,
+    exportNotificationsBackup,
     snoozeNotification,
     dispatchNotification,
     createReminder,

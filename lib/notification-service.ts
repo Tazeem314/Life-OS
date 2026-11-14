@@ -242,3 +242,19 @@ export async function requestAIDailyBriefing(
     return { success: false, error: message };
   }
 }
+
+/**
+ * Generates a formatted JSON backup string for notification records before bulk cleanup.
+ */
+export function createNotificationsBackupJson(notifications: NotificationRecord[]): string {
+  return JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      count: notifications.length,
+      notifications,
+    },
+    null,
+    2
+  );
+}

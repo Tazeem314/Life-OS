@@ -21,12 +21,15 @@ import {
   setDoc,
   updateDoc,
   getDocs,
+  getDocsFromServer,
   getDoc,
+  getDocFromServer,
   deleteDoc,
   onSnapshot,
   writeBatch,
   query,
   where,
+  limit,
 } from 'firebase/firestore';
 import firebaseConfig from '@/firebase-applet-config.json';
 
@@ -36,22 +39,29 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Authentication
 export const auth = getAuth(app);
 
-// Suppress transient backend connection timeout warnings in embedded webviews/iframes
+// Suppress transient warning noise while preserving genuine Firestore error logs
 try {
   setLogLevel('error');
 } catch {}
 
-// Use the isolated database specified in firebase-applet-config.json with resilient caching, auto-detect long polling and ignoreUndefinedProperties
+// Use the isolated database specified in firebase-applet-config.json.
+// Use experimentalForceLongPolling + useFetchStreams: false in the browser so WebChannel/fetch-stream
+// interceptors (extensions/proxies/iframes) cannot stall streams and trigger 10s offline timeouts.
 const targetDatabaseId = firebaseConfig.firestoreDatabaseId;
+type BrowserFirestoreSettings = Parameters<typeof initializeFirestore>[1] & {
+  useFetchStreams?: boolean;
+};
+
 export const db = (() => {
   const isBrowser = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
 
   if (isBrowser) {
     // 1. Attempt multi-tab persistent cache
     try {
-      const multiTabSettings = {
+      const multiTabSettings: BrowserFirestoreSettings = {
         ignoreUndefinedProperties: true,
-        experimentalAutoDetectLongPolling: true,
+        experimentalForceLongPolling: true,
+        useFetchStreams: false,
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager(),
         }),
@@ -62,9 +72,10 @@ export const db = (() => {
     } catch {
       // 2. Attempt single-tab persistent cache (common for mobile Safari WebViews)
       try {
-        const singleTabSettings = {
+        const singleTabSettings: BrowserFirestoreSettings = {
           ignoreUndefinedProperties: true,
-          experimentalAutoDetectLongPolling: true,
+          experimentalForceLongPolling: true,
+          useFetchStreams: false,
           localCache: persistentLocalCache({}),
         };
         return targetDatabaseId
@@ -73,9 +84,10 @@ export const db = (() => {
       } catch {
         // 3. Fallback to memory cache with ignoreUndefinedProperties
         try {
-          const memorySettings = {
+          const memorySettings: BrowserFirestoreSettings = {
             ignoreUndefinedProperties: true,
-            experimentalAutoDetectLongPolling: true,
+            experimentalForceLongPolling: true,
+            useFetchStreams: false,
             localCache: memoryLocalCache(),
           };
           return targetDatabaseId
@@ -89,9 +101,9 @@ export const db = (() => {
     }
   }
 
-  // Server-side fallback
+  // Server-side fallback (Node.js does not support browser long-polling flags)
   try {
-    const srvSettings = { ignoreUndefinedProperties: true, experimentalAutoDetectLongPolling: true };
+    const srvSettings = { ignoreUndefinedProperties: true };
     return targetDatabaseId
       ? initializeFirestore(app, srvSettings, targetDatabaseId)
       : initializeFirestore(app, srvSettings);
@@ -99,6 +111,19 @@ export const db = (() => {
     return targetDatabaseId ? getFirestore(app, targetDatabaseId) : getFirestore(app);
   }
 })();
+
+// Validate connection to Firestore on browser boot (non-blocking)
+if (typeof window !== 'undefined') {
+  (async function testConnection() {
+    try {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.error('Please check your Firebase configuration.');
+      }
+    }
+  })();
+}
 
 let isNetworkDisabled = false;
 
@@ -158,12 +183,15 @@ export {
   setDoc,
   updateDoc,
   getDocs,
+  getDocsFromServer,
   getDoc,
+  getDocFromServer,
   deleteDoc,
   onSnapshot,
   writeBatch,
   query,
   where,
+  limit,
   onAuthStateChanged,
 };
 export type { User };

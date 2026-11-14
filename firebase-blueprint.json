@@ -161,6 +161,122 @@
         "emergencyFundMonths": { "type": "number" }
       },
       "required": ["currency", "monthlyTarget"]
+    },
+    "NotificationRecord": {
+      "title": "NotificationRecord",
+      "description": "User in-app notification record scoped to authenticated user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "category": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "read": { "type": "boolean" },
+        "readAt": { "type": "string" },
+        "priority": { "type": "string" },
+        "relatedType": { "type": "string" },
+        "relatedId": { "type": "string" },
+        "deepLink": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "deduplicationKey": { "type": "string" },
+        "deliveryStatus": { "type": "string" },
+        "snoozeUntil": { "type": "string" }
+      },
+      "required": ["id", "category", "title", "message", "createdAt", "read", "priority"]
+    },
+    "ReminderDefinition": {
+      "title": "ReminderDefinition",
+      "description": "Custom scheduled user reminder definition",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "targetDate": { "type": "string" },
+        "targetTime": { "type": "string" },
+        "timeZone": { "type": "string" },
+        "recurring": { "type": "string" },
+        "recurrenceDays": { "type": "array", "items": { "type": "number" } },
+        "deepLink": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "lastTriggeredDate": { "type": "string" },
+        "lastTriggeredOccurrence": { "type": "string" }
+      },
+      "required": ["id", "title", "type", "timeZone", "recurring", "enabled"]
+    },
+    "NotificationSettings": {
+      "title": "NotificationSettings",
+      "description": "Per-user notification preferences and quiet hours configuration",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "inAppEnabled": { "type": "boolean" },
+        "pushEnabled": { "type": "boolean" },
+        "soundEnabled": { "type": "boolean" },
+        "timeZone": { "type": "string" },
+        "morningBriefingTime": { "type": "string" },
+        "eveningReviewTime": { "type": "string" },
+        "weeklyReviewDay": { "type": "number" },
+        "weeklyReviewTime": { "type": "string" },
+        "leadTimeMinutes": { "type": "number" },
+        "aiBriefingEnabled": { "type": "boolean" }
+      },
+      "required": ["enabled", "inAppEnabled", "timeZone"]
+    },
+    "DismissedNotificationsState": {
+      "title": "DismissedNotificationsState",
+      "description": "Per-user dismissed notification keys and monotonic clearedAllAt watermark",
+      "type": "object",
+      "properties": {
+        "keys": { "type": "array", "items": { "type": "string" } },
+        "clearedAllAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["keys"]
+    },
+    "AIDailyBriefing": {
+      "title": "AIDailyBriefing",
+      "description": "Daily AI briefing summary for a specific date",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "summary": { "type": "string" },
+        "keyPriorities": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "summary", "createdAt"]
+    },
+    "PushSubscriptionRecord": {
+      "title": "PushSubscriptionRecord",
+      "description": "Web push subscription record for the user device",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "lastUsedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "endpoint", "createdAt"]
+    },
+    "DeletionRecord": {
+      "title": "DeletionRecord",
+      "description": "Deletion tombstone marker for synced entities",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "deletedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "deletedAt"]
     }
   },
   "firestore": {
@@ -203,6 +319,34 @@
     "/users/{userId}/settings/{settingsId}": {
       "schema": "UserSettings",
       "description": "User configuration settings"
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": "NotificationRecord",
+      "description": "User notification records"
+    },
+    "/users/{userId}/reminders/{reminderId}": {
+      "schema": "ReminderDefinition",
+      "description": "User scheduled custom reminders"
+    },
+    "/users/{userId}/notificationSettings/config": {
+      "schema": "NotificationSettings",
+      "description": "User notification delivery preferences"
+    },
+    "/users/{userId}/notificationSettings/dismissed": {
+      "schema": "DismissedNotificationsState",
+      "description": "Dismissed notification keys and clearedAllAt watermark"
+    },
+    "/users/{userId}/aiBriefings/{briefingId}": {
+      "schema": "AIDailyBriefing",
+      "description": "Daily AI briefing entries"
+    },
+    "/users/{userId}/pushSubscriptions/{subscriptionId}": {
+      "schema": "PushSubscriptionRecord",
+      "description": "Web push subscription endpoints"
+    },
+    "/users/{userId}/deletions/{deletionId}": {
+      "schema": "DeletionRecord",
+      "description": "Entity deletion tombstones"
     }
   }
 }

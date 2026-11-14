@@ -66,46 +66,61 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
             __html: `
               (function() {
                 try {
-                  var fetchDesc = Object.getOwnPropertyDescriptor(window, 'fetch');
-                  if (fetchDesc && fetchDesc.get && !fetchDesc.set && fetchDesc.configurable) {
-                    var origFetchGetter = fetchDesc.get;
+                  var installFetchAccessor = function(desc, sourceObj) {
+                    if (!desc || !desc.get || desc.set) return false;
+                    var origGetter = desc.get;
                     var customFetchVal;
                     var hasCustomFetch = false;
                     Object.defineProperty(window, 'fetch', {
                       configurable: true,
-                      enumerable: !!fetchDesc.enumerable,
+                      enumerable: !!desc.enumerable,
                       get: function() {
-                        return hasCustomFetch ? customFetchVal : origFetchGetter.call(window);
+                        return hasCustomFetch ? customFetchVal : origGetter.call(sourceObj || window);
                       },
                       set: function(v) {
                         customFetchVal = v;
                         hasCustomFetch = true;
                       }
                     });
-                  } else if (!fetchDesc && typeof Window !== 'undefined' && Window.prototype) {
-                    var protoFetchDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+                    return true;
+                  };
+
+                  var fetchDesc = Object.getOwnPropertyDescriptor(window, 'fetch');
+                  if (fetchDesc && fetchDesc.get && !fetchDesc.set && fetchDesc.configurable) {
+                    installFetchAccessor(fetchDesc, window);
+                  } else if (!fetchDesc) {
+                    var proto = Object.getPrototypeOf ? Object.getPrototypeOf(window) : (typeof Window !== 'undefined' ? Window.prototype : null);
+                    var protoFetchDesc = proto ? Object.getOwnPropertyDescriptor(proto, 'fetch') : null;
+                    if (!protoFetchDesc && typeof Window !== 'undefined' && Window.prototype) {
+                      protoFetchDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+                    }
                     if (protoFetchDesc && protoFetchDesc.get && !protoFetchDesc.set) {
-                      var origProtoGetter = protoFetchDesc.get;
-                      var customProtoFetchVal;
-                      var hasCustomProtoFetch = false;
-                      Object.defineProperty(window, 'fetch', {
-                        configurable: true,
-                        enumerable: !!protoFetchDesc.enumerable,
-                        get: function() {
-                          return hasCustomProtoFetch ? customProtoFetchVal : origProtoGetter.call(window);
-                        },
-                        set: function(v) {
-                          customProtoFetchVal = v;
-                          hasCustomProtoFetch = true;
-                        }
-                      });
+                      installFetchAccessor(protoFetchDesc, window);
                     }
                   }
                 } catch (e) {}
                 try {
+                  var isExtensionError = function(filename, stack) {
+                    return (
+                      (typeof filename === 'string' && filename.indexOf('chrome-extension://') === 0) ||
+                      (typeof stack === 'string' && stack.indexOf('chrome-extension://') !== -1)
+                    );
+                  };
                   window.addEventListener('error', function(event) {
-                    if (event && typeof event.filename === 'string' && event.filename.indexOf('chrome-extension://') === 0) {
+                    if (event && isExtensionError(event.filename, event.error && event.error.stack)) {
                       event.preventDefault();
+                      if (typeof event.stopImmediatePropagation === 'function') {
+                        event.stopImmediatePropagation();
+                      }
+                    }
+                  }, true);
+                  window.addEventListener('unhandledrejection', function(event) {
+                    var stack = event && event.reason && event.reason.stack;
+                    if (isExtensionError('', stack)) {
+                      event.preventDefault();
+                      if (typeof event.stopImmediatePropagation === 'function') {
+                        event.stopImmediatePropagation();
+                      }
                     }
                   }, true);
                 } catch (e) {}

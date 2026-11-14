@@ -9,13 +9,18 @@ import {
   onSnapshot,
   writeBatch,
   getDocs,
+  getDocsFromServer,
   getDoc,
   query,
   where,
+  limit,
   User,
 } from './firebase';
+import { startAfter, Query, QuerySnapshot, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
 import { NotificationRecord, ReminderDefinition, NotificationSettings, PushSubscriptionRecord, AIDailyBriefing } from './notification-types';
+import { normalizeIsoTimestamp, normalizeTimestampMs } from './reminder-engine';
+import { recordNotificationDiagnostic } from './notification-diagnostics';
 
 export enum OperationType {
   CREATE = 'create',
@@ -33,6 +38,13 @@ export interface FirestoreErrorInfo {
   authInfo: {
     userId?: string | null;
     email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
   };
 }
 
@@ -93,7 +105,9 @@ export interface PendingWrite {
     | 'savings_transaction'
     | 'savings_transaction_delete'
     | 'savings_settings'
-    | 'settings';
+    | 'settings'
+    | 'notifications_clear_all'
+    | 'notifications_delete_batch';
   data?: any;
   id?: string;
   timestamp: number;
@@ -215,6 +229,24 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
           case 'settings':
             if (item.data) await syncSettingsToCloud(userId, item.data, false);
             break;
+          case 'notifications_clear_all':
+            if (item.data?.clearedAt) {
+              await syncDismissedNotificationsToCloud(
+                userId,
+                Array.isArray(item.data.keys) ? item.data.keys : [],
+                item.data.clearedAt
+              );
+              await deleteAllNotificationsFromCloud(userId, [], item.data.clearedAt);
+            }
+            break;
+          case 'notifications_delete_batch':
+            if (Array.isArray(item.data?.ids) && item.data.ids.length > 0) {
+              if (Array.isArray(item.data.keys)) {
+                await syncDismissedNotificationsToCloud(userId, item.data.keys, item.data.clearedAllAt ?? null);
+              }
+              await deleteNotificationsBatchFromCloud(userId, item.data.ids);
+            }
+            break;
         }
       } catch (err) {
         remaining.push(item);
@@ -233,16 +265,38 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
   }
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): void {
+export function isOfflineFirestoreError(error: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return true;
+  }
+  const code = (error as { code?: string } | null)?.code || '';
   const errMsg = error instanceof Error ? error.message : String(error);
-  // Don't treat transient offline / unreachable backend status as an unhandled application error
-  if (
+  return (
+    code === 'unavailable' ||
     errMsg.includes('Could not reach Cloud Firestore backend') ||
     errMsg.includes('offline mode') ||
     errMsg.includes('unavailable') ||
-    errMsg.includes('Failed to get document because the client is offline')
-  ) {
+    errMsg.includes('Failed to get document because the client is offline') ||
+    errMsg.includes('offline')
+  );
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null,
+  rethrow = false
+): void {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: string } | null)?.code || '';
+  const isPermissionError =
+    code === 'permission-denied' || errMsg.includes('Missing or insufficient permissions');
+
+  if (!isPermissionError && isOfflineFirestoreError(error)) {
     console.info('Firestore operating in resilient offline cache mode:', errMsg);
+    if (rethrow) {
+      throw new Error(errMsg || 'Firestore backend is currently offline');
+    }
     return;
   }
 
@@ -251,11 +305,23 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
     },
     operationType,
     path,
   };
-  console.error('Firestore Error:', JSON.stringify(errInfo));
+  const jsonErr = JSON.stringify(errInfo);
+  console.error('Firestore Error:', jsonErr);
+  if (rethrow || isPermissionError) {
+    throw new Error(jsonErr);
+  }
 }
 
 export async function saveUserProfile(user: User): Promise<void> {
@@ -594,7 +660,7 @@ export async function syncNotificationToCloud(userId: string, notification: Noti
     const notifRef = doc(db, 'users', userId, 'notifications', notification.id);
     await setDoc(notifRef, cleanForFirestore(notification), { merge: true });
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notifications/${notification.id}`);
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notifications/${notification.id}`, true);
   }
 }
 
@@ -612,71 +678,200 @@ export async function updateNotificationInCloud(
     if (error?.code === 'not-found' || msg.includes('No document to update')) {
       return;
     }
-    handleFirestoreError(error, OperationType.UPDATE, `users/${userId}/notifications/${notificationId}`);
+    handleFirestoreError(error, OperationType.UPDATE, `users/${userId}/notifications/${notificationId}`, true);
   }
 }
 
 export async function deleteNotificationFromCloud(userId: string, notificationId: string): Promise<void> {
   if (!userId || !notificationId) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Cannot confirm cloud deletion while offline.');
+  }
   try {
     const notifRef = doc(db, 'users', userId, 'notifications', notificationId);
     await deleteDoc(notifRef);
   } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications/${notificationId}`);
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications/${notificationId}`, true);
   }
 }
 
 export async function deleteNotificationsBatchFromCloud(
   userId: string,
   notificationIds: string[]
-): Promise<void> {
-  if (!userId || !notificationIds || notificationIds.length === 0) return;
+): Promise<{ deletedCount: number }> {
+  if (!userId || !notificationIds || notificationIds.length === 0) {
+    return { deletedCount: 0 };
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Cannot confirm cloud batch deletion while offline.');
+  }
+
   const uniqueIds = Array.from(new Set(notificationIds.filter(Boolean)));
-  const CHUNK_SIZE = 400;
+  const CHUNK_SIZE = 250;
+  let deletedCount = 0;
 
   for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
     const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
-    try {
-      const batch = writeBatch(db);
-      for (const id of chunk) {
-        batch.delete(doc(db, 'users', userId, 'notifications', id));
+    let lastError: unknown = null;
+    let committed = false;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const batch = writeBatch(db);
+        for (const id of chunk) {
+          batch.delete(doc(db, 'users', userId, 'notifications', id));
+        }
+        await batch.commit();
+        deletedCount += chunk.length;
+        committed = true;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < 2 && !isOfflineFirestoreError(err)) {
+          await new Promise((res) => setTimeout(res, 250 * attempt));
+        }
       }
-      await batch.commit();
-    } catch {
-      await Promise.allSettled(
-        chunk.map((id) => deleteDoc(doc(db, 'users', userId, 'notifications', id)))
+    }
+
+    if (!committed) {
+      recordNotificationDiagnostic({
+        event: 'cloud_batch_delete_failed',
+        count: chunk.length,
+        note: lastError instanceof Error ? lastError.message : String(lastError),
+      });
+      handleFirestoreError(
+        lastError,
+        OperationType.DELETE,
+        `users/${userId}/notifications`,
+        true
       );
     }
   }
+
+  return { deletedCount };
 }
 
 export async function deleteAllNotificationsFromCloud(
   userId: string,
-  knownIds: string[] = []
-): Promise<void> {
-  if (!userId) return;
+  knownIds: string[] = [],
+  clearedAt?: string | null
+): Promise<{ deletedCount: number; verifiedEmpty: boolean }> {
+  if (!userId) return { deletedCount: 0, verifiedEmpty: true };
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Cannot confirm cloud purge while offline.');
+  }
+
+  const clearedMs = normalizeTimestampMs(clearedAt);
+  let totalDeleted = 0;
+  const deletedIdSet = new Set<string>();
+
   try {
-    if (knownIds.length > 0) {
-      await deleteNotificationsBatchFromCloud(userId, knownIds);
+    const notifCol = collection(db, 'users', userId, 'notifications');
+    let lastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
+    const MAX_PAGES = 100;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const pageQuery: Query<DocumentData> = lastDoc
+        ? query(notifCol, startAfter(lastDoc), limit(250))
+        : query(notifCol, limit(250));
+
+      const snap: QuerySnapshot<DocumentData> = await getDocsFromServer(pageQuery);
+      if (snap.empty) {
+        break;
+      }
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      const idsToDelete: string[] = [];
+
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data() as Partial<NotificationRecord>;
+        if (clearedMs !== null) {
+          const docCreatedMs = normalizeTimestampMs(data?.createdAt);
+          // Skip docs demonstrably created strictly AFTER clearedAt
+          if (docCreatedMs !== null && docCreatedMs > clearedMs) {
+            continue;
+          }
+        }
+        idsToDelete.push(docSnap.id);
+      }
+
+      if (idsToDelete.length > 0) {
+        const res = await deleteNotificationsBatchFromCloud(userId, idsToDelete);
+        totalDeleted += res.deletedCount;
+        idsToDelete.forEach((id) => deletedIdSet.add(id));
+      }
+
+      if (snap.docs.length < 250) {
+        break;
+      }
     }
-    // Sweep any residual or out-of-sync docs directly in Firestore collection
-    const snap = await getDocs(collection(db, 'users', userId, 'notifications'));
-    if (!snap.empty) {
-      const remainingIds = snap.docs.map((d) => d.id);
-      await deleteNotificationsBatchFromCloud(userId, remainingIds);
+
+    // Also ensure any knownIds not returned by the page scan (e.g. pending writes) are deleted
+    const remainingKnown = knownIds.filter((id) => id && !deletedIdSet.has(id));
+    if (remainingKnown.length > 0) {
+      const res = await deleteNotificationsBatchFromCloud(userId, remainingKnown);
+      totalDeleted += res.deletedCount;
     }
+
+    // Authoritative server verification check
+    const verifySnap = await getDocsFromServer(query(notifCol, limit(50)));
+    const lingeringPreClearIds: string[] = [];
+    verifySnap.forEach((docSnap) => {
+      const data = docSnap.data() as Partial<NotificationRecord>;
+      const docCreatedMs = normalizeTimestampMs(data?.createdAt);
+      if (clearedMs === null || docCreatedMs === null || docCreatedMs <= clearedMs) {
+        lingeringPreClearIds.push(docSnap.id);
+      }
+    });
+
+    if (lingeringPreClearIds.length > 0) {
+      recordNotificationDiagnostic({
+        event: 'cloud_purge_lingering_retry',
+        count: lingeringPreClearIds.length,
+      });
+      const retryRes = await deleteNotificationsBatchFromCloud(userId, lingeringPreClearIds);
+      totalDeleted += retryRes.deletedCount;
+
+      const finalVerifySnap = await getDocsFromServer(query(notifCol, limit(50)));
+      const stillLingering = finalVerifySnap.docs.filter((d) => {
+        const docCreatedMs = normalizeTimestampMs((d.data() as Partial<NotificationRecord>)?.createdAt);
+        return clearedMs === null || docCreatedMs === null || docCreatedMs <= clearedMs;
+      });
+      if (stillLingering.length > 0) {
+        throw new Error(`Cloud verification failed: ${stillLingering.length} notifications still remain on server.`);
+      }
+    }
+
+    recordNotificationDiagnostic({
+      event: 'cloud_purge_verified_empty',
+      count: totalDeleted,
+    });
+
+    return { deletedCount: totalDeleted, verifiedEmpty: true };
   } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications`);
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/notifications`, true);
+    return { deletedCount: totalDeleted, verifiedEmpty: false };
   }
 }
 
-export async function markAllNotificationsReadInCloud(userId: string, notificationIds: string[]): Promise<void> {
+export async function markAllNotificationsReadInCloud(
+  userId: string,
+  notificationIds: string[],
+  shouldCancel?: () => boolean
+): Promise<void> {
   if (!userId || !notificationIds || notificationIds.length === 0) return;
   const uniqueIds = Array.from(new Set(notificationIds.filter(Boolean)));
   const nowIso = new Date().toISOString();
-  const CHUNK_SIZE = 400;
+  const CHUNK_SIZE = 250;
 
   for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+    if (shouldCancel?.()) {
+      recordNotificationDiagnostic({
+        event: 'mark_all_read_aborted_for_delete',
+        count: uniqueIds.length - i,
+      });
+      break;
+    }
     const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
     try {
       const batch = writeBatch(db);
@@ -686,7 +881,7 @@ export async function markAllNotificationsReadInCloud(userId: string, notificati
       }
       await batch.commit();
     } catch {
-      // Fallback per-doc updateDoc so a deleted/missing doc never breaks other updates or resurrects deleted docs
+      if (shouldCancel?.()) break;
       await Promise.allSettled(
         chunk.map((id) =>
           updateDoc(doc(db, 'users', userId, 'notifications', id), { read: true, readAt: nowIso }).catch(() => {})
@@ -711,13 +906,13 @@ export async function syncDismissedNotificationsToCloud(
   try {
     const ref = doc(db, 'users', userId, 'notificationSettings', 'dismissed');
     const payload: CloudDismissedNotificationsState = {
-      keys: Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0))).slice(-500),
+      keys: Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0))).slice(-1500),
       clearedAllAt: clearedAllAt || null,
       updatedAt: new Date().toISOString(),
     };
     await setDoc(ref, cleanForFirestore(payload), { merge: true });
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notificationSettings/dismissed`);
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/notificationSettings/dismissed`, true);
   }
 }
 
@@ -1100,42 +1295,69 @@ export function subscribeToUserCloudData(
   }
 ): () => void {
   let isUnsubscribed = false;
-  let retryTimer: NodeJS.Timeout | null = null;
-  let activeUnsubs: (() => void)[] = [];
+  const activeUnsubs = new Map<string, () => void>();
+  const retryTimers = new Map<string, NodeJS.Timeout>();
+  const retryAttempts = new Map<string, number>();
 
-  const setupSubscriptions = () => {
+  const attachListener = (key: string, attachFn: (onError: (err: unknown) => void) => () => void, operation: OperationType, path: string) => {
     if (isUnsubscribed || !userId) return;
 
-    // Clean up existing listeners
-    activeUnsubs.forEach((unsub) => {
+    const existingUnsub = activeUnsubs.get(key);
+    if (existingUnsub) {
       try {
-        unsub();
+        existingUnsub();
       } catch {}
-    });
-    activeUnsubs = [];
+      activeUnsubs.delete(key);
+    }
 
-    const handleListenerError = (operation: OperationType, path: string) => (err: unknown) => {
-      handleFirestoreError(err, operation, path);
-      if (isUnsubscribed) return;
+    const existingTimer = retryTimers.get(key);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      retryTimers.delete(key);
+    }
+
+    const onError = (err: unknown) => {
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes('INTERNAL ASSERTION FAILED')) {
+      const code = (err as { code?: string } | null)?.code || '';
+      // Log error cleanly without tearing down healthy sibling listeners
+      if (code === 'permission-denied' || errMsg.includes('Missing or insufficient permissions')) {
+        console.error(`Firestore listener permission error [${path}]:`, errMsg);
         return;
       }
-      if (!retryTimer) {
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
+      handleFirestoreError(err, operation, path, false);
+      if (isUnsubscribed || errMsg.includes('INTERNAL ASSERTION FAILED')) {
+        return;
+      }
+      const attempt = (retryAttempts.get(key) || 0) + 1;
+      retryAttempts.set(key, attempt);
+      const delayMs = Math.min(60000, 5000 * Math.pow(2, Math.min(attempt - 1, 3)));
+      if (!retryTimers.has(key)) {
+        const timer = setTimeout(() => {
+          retryTimers.delete(key);
           if (!isUnsubscribed) {
-            setupSubscriptions();
+            attachListener(key, attachFn, operation, path);
           }
-        }, 5000);
+        }, delayMs);
+        retryTimers.set(key, timer);
       }
     };
 
     try {
-      const unsubHabits = onSnapshot(
+      const unsub = attachFn(onError);
+      activeUnsubs.set(key, unsub);
+    } catch (err) {
+      onError(err);
+    }
+  };
+
+  attachListener(
+    'habits',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'habits'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('habits');
           const list: Habit[] = [];
           snap.forEach((d) => list.push(d.data() as Habit));
           handlers.onHabits(list, {
@@ -1143,14 +1365,20 @@ export function subscribeToUserCloudData(
             hasPendingWrites: snap.metadata.hasPendingWrites,
           });
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/habits`)
-      );
-      activeUnsubs.push(unsubHabits);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/habits`
+  );
 
-      const unsubCompletions = onSnapshot(
+  attachListener(
+    'completions',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'habitCompletions'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('completions');
           const list: HabitCompletion[] = [];
           snap.forEach((d) => list.push(d.data() as HabitCompletion));
           handlers.onCompletions(list, {
@@ -1158,14 +1386,20 @@ export function subscribeToUserCloudData(
             hasPendingWrites: snap.metadata.hasPendingWrites,
           });
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/habitCompletions`)
-      );
-      activeUnsubs.push(unsubCompletions);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/habitCompletions`
+  );
 
-      const unsubTodos = onSnapshot(
+  attachListener(
+    'todos',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'todos'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('todos');
           const list: Todo[] = [];
           snap.forEach((d) => list.push(d.data() as Todo));
           list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -1174,14 +1408,20 @@ export function subscribeToUserCloudData(
             hasPendingWrites: snap.metadata.hasPendingWrites,
           });
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/todos`)
-      );
-      activeUnsubs.push(unsubTodos);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/todos`
+  );
 
-      const unsubGoals = onSnapshot(
+  attachListener(
+    'goals',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'goals'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('goals');
           const list: Goal[] = [];
           snap.forEach((d) => list.push(d.data() as Goal));
           if (handlers.onGoals) {
@@ -1191,14 +1431,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/goals`)
-      );
-      activeUnsubs.push(unsubGoals);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/goals`
+  );
 
-      const unsubSleepLogs = onSnapshot(
+  attachListener(
+    'sleepLogs',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'sleepLogs'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('sleepLogs');
           const list: SleepLog[] = [];
           snap.forEach((d) => list.push(d.data() as SleepLog));
           list.sort((a, b) => b.date.localeCompare(a.date));
@@ -1209,14 +1455,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/sleepLogs`)
-      );
-      activeUnsubs.push(unsubSleepLogs);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/sleepLogs`
+  );
 
-      const unsubSavingsGoals = onSnapshot(
+  attachListener(
+    'savingsGoals',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'savingsGoals'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('savingsGoals');
           const list: SavingsGoal[] = [];
           snap.forEach((d) => list.push(d.data() as SavingsGoal));
           if (handlers.onSavingsGoals) {
@@ -1226,14 +1478,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/savingsGoals`)
-      );
-      activeUnsubs.push(unsubSavingsGoals);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/savingsGoals`
+  );
 
-      const unsubSavingsTx = onSnapshot(
+  attachListener(
+    'savingsTransactions',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'savingsTransactions'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('savingsTransactions');
           const list: SavingsTransaction[] = [];
           snap.forEach((d) => list.push(d.data() as SavingsTransaction));
           list.sort((a, b) => b.date.localeCompare(a.date));
@@ -1244,14 +1502,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/savingsTransactions`)
-      );
-      activeUnsubs.push(unsubSavingsTx);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/savingsTransactions`
+  );
 
-      const unsubSavingsSettings = onSnapshot(
+  attachListener(
+    'savingsSettings',
+    (onError) =>
+      onSnapshot(
         doc(db, 'users', userId, 'savingsSettings', 'settings'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('savingsSettings');
           if (snap.exists() && handlers.onSavingsSettings) {
             handlers.onSavingsSettings(snap.data() as SavingsSettings, {
               fromCache: snap.metadata.fromCache,
@@ -1259,14 +1523,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.GET, `users/${userId}/savingsSettings/settings`)
-      );
-      activeUnsubs.push(unsubSavingsSettings);
+        onError
+      ),
+    OperationType.GET,
+    `users/${userId}/savingsSettings/settings`
+  );
 
-      const unsubSettings = onSnapshot(
+  attachListener(
+    'settings',
+    (onError) =>
+      onSnapshot(
         doc(db, 'users', userId, 'settings', 'user_settings'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('settings');
           if (snap.exists()) {
             handlers.onSettings(snap.data() as UserSettings, {
               fromCache: snap.metadata.fromCache,
@@ -1274,17 +1544,37 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.GET, `users/${userId}/settings/user_settings`)
-      );
-      activeUnsubs.push(unsubSettings);
+        onError
+      ),
+    OperationType.GET,
+    `users/${userId}/settings/user_settings`
+  );
 
-      const unsubNotifications = onSnapshot(
+  attachListener(
+    'notifications',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'notifications'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('notifications');
           const list: NotificationRecord[] = [];
-          snap.forEach((d) => list.push(d.data() as NotificationRecord));
-          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          snap.forEach((d) => {
+            const raw = d.data() as Record<string, unknown>;
+            const normalizedCreatedAt = normalizeIsoTimestamp(raw?.createdAt, '');
+            list.push({
+              ...(raw as unknown as NotificationRecord),
+              id: (typeof raw?.id === 'string' && raw.id) ? raw.id : d.id,
+              createdAt: normalizedCreatedAt,
+            });
+          });
+          list.sort((a, b) => (normalizeTimestampMs(b.createdAt) ?? 0) - (normalizeTimestampMs(a.createdAt) ?? 0));
+          recordNotificationDiagnostic({
+            event: 'snapshot_notifications',
+            count: list.length,
+            fromCache: snap.metadata.fromCache,
+            hasPendingWrites: snap.metadata.hasPendingWrites,
+          });
           if (handlers.onNotifications) {
             handlers.onNotifications(list, {
               fromCache: snap.metadata.fromCache,
@@ -1292,17 +1582,28 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/notifications`)
-      );
-      activeUnsubs.push(unsubNotifications);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/notifications`
+  );
 
-      const unsubDismissedNotifications = onSnapshot(
+  attachListener(
+    'dismissedNotifications',
+    (onError) =>
+      onSnapshot(
         doc(db, 'users', userId, 'notificationSettings', 'dismissed'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('dismissedNotifications');
           if (handlers.onDismissedNotifications) {
-            const data = snap.exists()
-              ? (snap.data() as CloudDismissedNotificationsState)
+            const raw = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+            const data: CloudDismissedNotificationsState = raw
+              ? {
+                  keys: Array.isArray(raw.keys) ? (raw.keys as string[]) : [],
+                  clearedAllAt: raw.clearedAllAt ? normalizeIsoTimestamp(raw.clearedAllAt, '') || null : null,
+                  updatedAt: raw.updatedAt ? normalizeIsoTimestamp(raw.updatedAt, '') : undefined,
+                }
               : { keys: [], clearedAllAt: null };
             handlers.onDismissedNotifications(data, {
               fromCache: snap.metadata.fromCache,
@@ -1310,14 +1611,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.GET, `users/${userId}/notificationSettings/dismissed`)
-      );
-      activeUnsubs.push(unsubDismissedNotifications);
+        onError
+      ),
+    OperationType.GET,
+    `users/${userId}/notificationSettings/dismissed`
+  );
 
-      const unsubReminders = onSnapshot(
+  attachListener(
+    'reminders',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'reminders'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('reminders');
           const list: ReminderDefinition[] = [];
           snap.forEach((d) => list.push(d.data() as ReminderDefinition));
           if (handlers.onReminders) {
@@ -1327,14 +1634,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/reminders`)
-      );
-      activeUnsubs.push(unsubReminders);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/reminders`
+  );
 
-      const unsubNotificationSettings = onSnapshot(
+  attachListener(
+    'notificationSettings',
+    (onError) =>
+      onSnapshot(
         doc(db, 'users', userId, 'notificationSettings', 'settings'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('notificationSettings');
           if (snap.exists() && handlers.onNotificationSettings) {
             handlers.onNotificationSettings(snap.data() as NotificationSettings, {
               fromCache: snap.metadata.fromCache,
@@ -1342,14 +1655,20 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.GET, `users/${userId}/notificationSettings/settings`)
-      );
-      activeUnsubs.push(unsubNotificationSettings);
+        onError
+      ),
+    OperationType.GET,
+    `users/${userId}/notificationSettings/settings`
+  );
 
-      const unsubAIBriefings = onSnapshot(
+  attachListener(
+    'aiBriefings',
+    (onError) =>
+      onSnapshot(
         collection(db, 'users', userId, 'aiBriefings'),
         (snap) => {
           if (isUnsubscribed) return;
+          retryAttempts.delete('aiBriefings');
           const list: AIDailyBriefing[] = [];
           snap.forEach((d) => list.push(d.data() as AIDailyBriefing));
           list.sort((a, b) => (b.dateKey || b.date || '').localeCompare(a.dateKey || a.date || ''));
@@ -1360,11 +1679,16 @@ export function subscribeToUserCloudData(
             });
           }
         },
-        handleListenerError(OperationType.LIST, `users/${userId}/aiBriefings`)
-      );
-      activeUnsubs.push(unsubAIBriefings);
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/aiBriefings`
+  );
 
-      const unsubDeletions = onSnapshot(
+  attachListener(
+    'deletions',
+    () =>
+      onSnapshot(
         collection(db, 'users', userId, 'deletions'),
         (snap) => {
           if (isUnsubscribed) return;
@@ -1380,32 +1704,20 @@ export function subscribeToUserCloudData(
           }
         },
         () => {}
-      );
-      activeUnsubs.push(unsubDeletions);
-    } catch (err) {
-      console.warn('Failed to attach firestore listeners:', err);
-      if (!retryTimer) {
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          if (!isUnsubscribed) setupSubscriptions();
-        }, 2500);
-      }
-    }
-  };
-
-  setupSubscriptions();
+      ),
+    OperationType.LIST,
+    `users/${userId}/deletions`
+  );
 
   return () => {
     isUnsubscribed = true;
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
+    retryTimers.forEach((timer) => clearTimeout(timer));
+    retryTimers.clear();
     activeUnsubs.forEach((unsub) => {
       try {
         unsub();
       } catch {}
     });
-    activeUnsubs = [];
+    activeUnsubs.clear();
   };
 }

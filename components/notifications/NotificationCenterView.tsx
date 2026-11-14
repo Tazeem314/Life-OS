@@ -65,6 +65,8 @@ export function NotificationCenterView() {
     deleteNotification,
     clearAllReadNotifications,
     clearAllNotifications,
+    exportNotificationsBackup,
+    isDeletingNotifications,
     snoozeNotification,
     updateReminder,
     deleteReminder,
@@ -85,7 +87,8 @@ export function NotificationCenterView() {
     title: string;
     message: string;
     confirmText: string;
-    onConfirm: () => void;
+    secondaryAction?: { label: string; onClick: () => void };
+    onConfirm: () => void | Promise<void>;
   }>({
     isOpen: false,
     title: '',
@@ -143,8 +146,8 @@ export function NotificationCenterView() {
         'This will permanently remove all read notification records. Your underlying tasks, habits, and goals are never affected.',
       confirmText: 'Clear Read Notifications',
       onConfirm: () => {
-        clearAllReadNotifications();
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        void clearAllReadNotifications();
       },
     });
   };
@@ -154,11 +157,18 @@ export function NotificationCenterView() {
       isOpen: true,
       title: 'Clear All Notifications?',
       message:
-        'This will permanently remove all notification records from your view and cloud storage. Your underlying tasks, habits, and goals are never affected.',
+        'This will permanently remove all notification records from your view and cloud storage. You can download a JSON backup before bulk cloud cleanup. Your underlying tasks, habits, and goals are never affected.',
       confirmText: 'Clear All Notifications',
+      secondaryAction:
+        notifications.length > 0
+          ? {
+              label: `Download JSON Backup (${notifications.length})`,
+              onClick: () => exportNotificationsBackup(),
+            }
+          : undefined,
       onConfirm: () => {
-        clearAllNotifications();
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        void clearAllNotifications();
       },
     });
   };
@@ -219,11 +229,12 @@ export function NotificationCenterView() {
             <button
               type="button"
               onClick={promptClearRead}
+              disabled={isDeletingNotifications}
               title="Delete all read notifications"
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear Read</span>
+              <span>{isDeletingNotifications ? 'Clearing...' : 'Clear Read'}</span>
             </button>
           )}
 
@@ -232,11 +243,12 @@ export function NotificationCenterView() {
             <button
               type="button"
               onClick={promptClearAll}
+              disabled={isDeletingNotifications}
               title="Delete all notifications"
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-medium shadow-2xs transition cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-              <span>Delete All</span>
+              <span>{isDeletingNotifications ? 'Clearing...' : 'Delete All'}</span>
             </button>
           )}
 
@@ -606,6 +618,8 @@ export function NotificationCenterView() {
         message={confirmDialog.message}
         confirmText={confirmDialog.confirmText}
         isDestructive={true}
+        isLoading={isDeletingNotifications}
+        secondaryAction={confirmDialog.secondaryAction}
         onConfirm={confirmDialog.onConfirm}
         onCancel={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
       />
