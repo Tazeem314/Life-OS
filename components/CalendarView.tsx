@@ -19,7 +19,10 @@ import {
   Edit2,
   Trash2,
   History,
+  Repeat,
+  GraduationCap,
 } from 'lucide-react';
+import { formatStudyMinutes, isStudyTodo } from '@/lib/study-service';
 
 interface CalendarViewProps {
   onOpenNewTodo: (date: string) => void;
@@ -388,6 +391,25 @@ export function CalendarView({
                         </span>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {isStudyTodo(todo) && (
+                          <span
+                            className="text-[10px] font-semibold text-sky-600 dark:text-sky-400 flex items-center gap-0.5 mr-1 shrink-0"
+                            title="Study Task"
+                          >
+                            <GraduationCap className="w-3 h-3" />
+                            {todo.estimatedDurationMinutes && todo.estimatedDurationMinutes > 0
+                              ? formatStudyMinutes(todo.estimatedDurationMinutes)
+                              : 'Study'}
+                          </span>
+                        )}
+                        {todo.recurrence && todo.recurrence !== 'none' && (
+                          <span
+                            className="text-indigo-500 dark:text-indigo-400 mr-0.5 shrink-0"
+                            title="Recurring task"
+                          >
+                            <Repeat className="w-3 h-3" />
+                          </span>
+                        )}
                         {todo.dueTime && (
                           <span className="text-[10px] text-zinc-400 flex items-center gap-0.5 mr-1">
                             <Clock className="w-3 h-3" />

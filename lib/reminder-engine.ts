@@ -1,4 +1,5 @@
 import { Habit, Todo, Goal, HabitCompletion } from './types';
+import { isHabitScheduledForDate } from './date-utils';
 import {
   NotificationRecord,
   NotificationSettings,
@@ -86,6 +87,36 @@ function getLocalTimeStr(d: Date): string {
 }
 
 /**
+ * Normalizes a time string (e.g. "9:00", "09:00", "09:00:00") into canonical 24h "HH:mm".
+ * Returns null if invalid or empty.
+ */
+export function normalizeTimeHHMM(raw?: string | null): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+/**
+ * Evaluates whether a habit is scheduled on a specific YYYY-MM-DD dateKey.
+ */
+export function isHabitDueOnDate(
+  habit: Pick<Habit, 'frequency' | 'daysOfWeek' | 'startDate'>,
+  dateKey: string
+): boolean {
+  const startDate = habit.startDate || dateKey;
+  const daysOfWeek = Array.isArray(habit.daysOfWeek) ? habit.daysOfWeek : [];
+  return isHabitScheduledForDate(habit.frequency || 'daily', daysOfWeek, startDate, dateKey);
+}
+
+/**
  * Normalizes an idempotency/deduplication key so that userId differences
  * (e.g. 'local_user' vs Firebase UID, or cross-session rehydration)
  * still resolve to the exact same canonical dismissal key.
@@ -143,7 +174,7 @@ export function getNotificationDismissalKeys(
   }
 
   const entityId = notif.relatedId || notif.sourceId;
-  if (notif.category && entityId && dateKey) {
+  if (candidateKeys.length === 0 && notif.category && entityId && dateKey) {
     keys.add(`e:${notif.category}:${entityId}:${dateKey}`);
   }
 
@@ -336,20 +367,21 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
       }
 
       // Today's task with specific dueTime
-      if (todo.date === currentDateKey && todo.dueTime) {
-        if (todo.dueTime <= currentTimeStr) {
+      const normalizedDueTime = normalizeTimeHHMM(todo.dueTime);
+      if (todo.date === currentDateKey && normalizedDueTime) {
+        if (normalizedDueTime <= currentTimeStr) {
           if (
             !wasTriggerCoveredByClearAll(
               clearedMs,
               clearedDateKey,
               clearedTimeStr,
               currentDateKey,
-              todo.dueTime,
+              normalizedDueTime,
               (todo as any).updatedAt,
               (todo as any).createdAt
             )
           ) {
-            const dueKey = `task_due_${userId}_${todo.id}_${currentDateKey}_${todo.dueTime}`;
+            const dueKey = `task_due_${userId}_${todo.id}_${currentDateKey}_${normalizedDueTime}`;
             queueNotification(
               {
                 category: 'tasks',
@@ -377,24 +409,16 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
         .filter((c: any) => c.date === currentDateKey || c.dateKey === currentDateKey)
         .map((c: any) => c.habitId)
     );
-    const dayOfWeek = new Date(currentDateKey + 'T12:00:00Z').getUTCDay();
 
     for (const habit of habits) {
       if (habit.status === 'paused') continue;
+      const targetTime = normalizeTimeHHMM(habit.reminderTime);
+      if (!targetTime) continue;
+      if (habit.startDate && habit.startDate > currentDateKey) continue;
       if (todayCompletions.has(habit.id)) continue;
 
-      let isScheduled = false;
-      if (habit.frequency === 'daily') isScheduled = true;
-      else if (habit.frequency === 'weekdays') isScheduled = dayOfWeek >= 1 && dayOfWeek <= 5;
-      else if (habit.frequency === 'weekly') {
-        isScheduled = habit.daysOfWeek ? habit.daysOfWeek.includes(dayOfWeek) : true;
-      } else {
-        isScheduled = true;
-      }
+      if (!isHabitDueOnDate(habit, currentDateKey)) continue;
 
-      if (!isScheduled) continue;
-
-      const targetTime = habit.reminderTime || '18:00';
       if (targetTime <= currentTimeStr) {
         if (
           !wasTriggerCoveredByClearAll(
@@ -407,12 +431,12 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
             (habit as any).createdAt
           )
         ) {
-          const habitKey = `habit_prompt_${userId}_${habit.id}_${currentDateKey}`;
+          const habitKey = `habit_prompt_${userId}_${habit.id}_${currentDateKey}_${targetTime}`;
           queueNotification(
             {
               category: 'habits',
-              title: `Habit Check-in: ${habit.name}`,
-              message: `Keep your streak alive! Have you completed "${habit.name}" today?`,
+              title: `Habit Reminder: ${habit.name}`,
+              message: `Scheduled for ${targetTime} — keep your streak alive!`,
               priority: 'normal',
               relatedType: 'habit',
               relatedId: habit.id,
@@ -557,7 +581,7 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
         isDueToday = rem.recurrenceDays ? rem.recurrenceDays.includes(dayOfWeek) : true;
       }
 
-      const targetTime = rem.targetTime || rem.timeOfDay;
+      const targetTime = normalizeTimeHHMM(rem.targetTime || rem.timeOfDay);
       if (isDueToday && targetTime && targetTime <= currentTimeStr) {
         if (
           !wasTriggerCoveredByClearAll(
@@ -592,3 +616,87 @@ export function evaluateReminders(context: ReminderEvaluationContext): Notificat
 }
 
 export const evaluateAllReminders = evaluateReminders;
+
+/**
+ * Computes the exact delay (in ms) until the earliest upcoming scheduled reminder today
+ * (habit reminderTime, task dueTime, routine time, or custom reminder).
+ * Returns null if no future reminder remains today.
+ */
+export function getNextUpcomingReminderDelayMs(context: {
+  settings?: NotificationSettings;
+  habits?: Habit[];
+  habitCompletions?: (HabitCompletion | { habitId: string; date?: string; dateKey?: string })[];
+  todos?: Todo[];
+  customReminders?: ReminderDefinition[];
+  now?: Date;
+}): number | null {
+  const settings = context.settings || DEFAULT_NOTIFICATION_SETTINGS;
+  if (!settings || (settings.enabled === false && !settings.inAppEnabled && !settings.pushEnabled)) {
+    return null;
+  }
+
+  const now = context.now || new Date();
+  const currentDateKey = getLocalDateKey(now);
+  const currentTimeStr = getLocalTimeStr(now);
+  const todayCompletions = new Set(
+    (context.habitCompletions || [])
+      .filter((c: any) => c.date === currentDateKey || c.dateKey === currentDateKey)
+      .map((c: any) => c.habitId)
+  );
+
+  const upcomingTimes: string[] = [];
+
+  if (settings.categories?.habits !== false) {
+    for (const habit of context.habits || []) {
+      if (habit.status === 'paused') continue;
+      const targetTime = normalizeTimeHHMM(habit.reminderTime);
+      if (!targetTime) continue;
+      if (habit.startDate && habit.startDate > currentDateKey) continue;
+      if (todayCompletions.has(habit.id)) continue;
+      if (!isHabitDueOnDate(habit, currentDateKey)) continue;
+      if (targetTime > currentTimeStr) {
+        upcomingTimes.push(targetTime);
+      }
+    }
+  }
+
+  if (settings.categories?.tasks !== false) {
+    for (const todo of context.todos || []) {
+      if (todo.completed || todo.date !== currentDateKey) continue;
+      const targetTime = normalizeTimeHHMM(todo.dueTime);
+      if (targetTime && targetTime > currentTimeStr) {
+        upcomingTimes.push(targetTime);
+      }
+    }
+  }
+
+  if (settings.categories?.custom !== false) {
+    const dayOfWeek = new Date(currentDateKey + 'T12:00:00Z').getUTCDay();
+    for (const rem of context.customReminders || []) {
+      if (!rem.enabled) continue;
+      let isDueToday = false;
+      if (rem.recurring === 'none') isDueToday = rem.targetDate === currentDateKey;
+      else if (rem.recurring === 'daily') isDueToday = true;
+      else if (rem.recurring === 'weekdays') isDueToday = dayOfWeek >= 1 && dayOfWeek <= 5;
+      else if (rem.recurring === 'weekly' || rem.recurring === 'custom_days') {
+        isDueToday = rem.recurrenceDays ? rem.recurrenceDays.includes(dayOfWeek) : true;
+      }
+      if (!isDueToday) continue;
+      const targetTime = normalizeTimeHHMM(rem.targetTime || rem.timeOfDay);
+      if (targetTime && targetTime > currentTimeStr) {
+        upcomingTimes.push(targetTime);
+      }
+    }
+  }
+
+  if (upcomingTimes.length === 0) {
+    return null;
+  }
+
+  upcomingTimes.sort();
+  const nextTime = upcomingTimes[0];
+  const [hh, mm] = nextTime.split(':').map(Number);
+  const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 250);
+  const delay = targetDate.getTime() - now.getTime();
+  return Math.max(250, delay);
+}

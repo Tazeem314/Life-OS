@@ -31,6 +31,13 @@ import {
   where,
   limit,
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject,
+} from 'firebase/storage';
 import firebaseConfig from '@/firebase-applet-config.json';
 
 // Initialize Firebase app once
@@ -38,6 +45,9 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 // Initialize Authentication
 export const auth = getAuth(app);
+
+// Initialize Cloud Storage
+export const storage = getStorage(app);
 
 // Suppress transient warning noise while preserving genuine Firestore error logs
 try {
@@ -193,5 +203,9 @@ export {
   where,
   limit,
   onAuthStateChanged,
+  storageRef,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject,
 };
 export type { User };

@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLifeOS } from '@/context/LifeOSContext';
 import { formatDisplayDate, getTodayKey } from '@/lib/date-utils';
+import { computeActiveStudyElapsedMs, formatHMS } from '@/lib/study-service';
 import {
   Flame,
   Sun,
@@ -11,6 +12,9 @@ import {
   Calendar as CalendarIcon,
   WifiOff,
   RefreshCw,
+  Timer,
+  Pause,
+  Play,
 } from 'lucide-react';
 import { AuthButton } from '@/components/AuthButton';
 import { PWAInstallButton } from '@/components/PWAInstallButton';
@@ -37,7 +41,32 @@ export function Navbar({
     goToToday,
     isOnline,
     isSyncing,
+    activeTab,
+    setActiveTab,
+    activeStudyTimer,
+    pauseStudyTimer,
+    resumeStudyTimer,
   } = useLifeOS();
+
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!activeStudyTimer || activeStudyTimer.status !== 'running') return;
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [activeStudyTimer]);
+
+  const showLiveTimerBar = Boolean(activeStudyTimer && activeTab !== 'study_timer');
+  const timerElapsedLabel = activeStudyTimer
+    ? formatHMS(
+        computeActiveStudyElapsedMs(
+          activeStudyTimer,
+          activeStudyTimer.status === 'running' ? nowMs : activeStudyTimer.pausedAtTimestamp || nowMs
+        )
+      )
+    : null;
 
   const toggleTheme = () => {
     if (settings.theme === 'light') {
@@ -95,8 +124,59 @@ export function Navbar({
           </div>
         </div>
 
-        {/* Right Section: Streak Counter, Theme Toggle, Install, Auth */}
-        <div className="flex items-center gap-2">
+        {/* Right Section: Compact Active Study Timer Bar, Streak Counter, Theme Toggle, Install, Auth */}
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          {showLiveTimerBar && activeStudyTimer && timerElapsedLabel && (
+            <div
+              onClick={() => setActiveTab('study_timer')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setActiveTab('study_timer');
+                }
+              }}
+              title={`Active study timer: ${activeStudyTimer.taskNameSnapshot}. Click to open Study Timer.`}
+              className={`flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-lg border text-xs cursor-pointer transition shrink-0 ${
+                activeStudyTimer.status === 'running'
+                  ? 'bg-sky-50 dark:bg-sky-950/70 border-sky-200 dark:border-sky-800/70 text-sky-700 dark:text-sky-300'
+                  : 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/70 text-amber-700 dark:text-amber-300'
+              }`}
+            >
+              <Timer
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  activeStudyTimer.status === 'running' ? 'animate-pulse text-sky-600 dark:text-sky-400' : 'text-amber-500'
+                }`}
+              />
+              <span className="hidden lg:inline truncate max-w-[140px] font-medium">
+                {activeStudyTimer.taskNameSnapshot}
+              </span>
+              <span className="font-mono font-bold tabular-nums text-[11px] sm:text-xs">
+                {timerElapsedLabel}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (activeStudyTimer.status === 'running') {
+                    pauseStudyTimer();
+                  } else {
+                    resumeStudyTimer();
+                  }
+                }}
+                aria-label={activeStudyTimer.status === 'running' ? 'Pause study timer' : 'Resume study timer'}
+                className="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition shrink-0"
+              >
+                {activeStudyTimer.status === 'running' ? (
+                  <Pause className="w-3 h-3" />
+                ) : (
+                  <Play className="w-3 h-3" />
+                )}
+              </button>
+            </div>
+          )}
+
           {/* Offline / Syncing Indicator */}
           {!isOnline ? (
             <div

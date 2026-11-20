@@ -35,6 +35,17 @@ import {
   SavingsSettings,
   SavingsAnalyticsSummary,
   AISavingsInsight,
+  StudySession,
+  ActiveStudyTimerState,
+  StopwatchLap,
+  StopwatchRecord,
+  ActiveStopwatchState,
+  StudyNote,
+  StudyNoteAttachment,
+  StudyNoteVideoLink,
+  StudyDashboardSummary,
+  StudyAnalyticsSummary,
+  StudyAnalyticsRange,
 } from '@/lib/types';
 import {
   calculateSleepAnalytics,
@@ -48,6 +59,13 @@ import {
   DEFAULT_SAVINGS_SETTINGS,
   formatCurrency,
 } from '@/lib/savings-service';
+import {
+  computeActiveStudyElapsedMs,
+  computeActiveStopwatchElapsedMs,
+  calculateStudyDashboardSummary,
+  calculateStudyAnalytics,
+} from '@/lib/study-service';
+import { deleteStudyAttachmentFile } from '@/lib/study-storage-service';
 import {
   toggleTaskInGoal,
   toggleMilestoneInGoal,
@@ -73,6 +91,73 @@ const filterCleanHabits = (list: Habit[]) => (list || []).filter((h) => h && !DE
 const filterCleanCompletions = (list: HabitCompletion[]) =>
   (list || []).filter((c) => c && !DEMO_COMPLETION_IDS.has(c.id) && !DEMO_HABIT_IDS.has(c.habitId));
 const filterCleanTodos = (list: Todo[]) => (list || []).filter((t) => t && !DEMO_TODO_IDS.has(t.id));
+
+const mergeRemoteTimestampedEntities = <T extends { id: string; updatedAt?: string }>(
+  local: T[],
+  remote: T[],
+  syncedIds: Set<string>,
+  pendingUploadIds: Set<string>,
+  pendingWriteType: string,
+  isAuthoritative = true,
+  deletions: Map<string, string> = new Map()
+): { merged: T[]; newToUpload: T[] } => {
+  const map = new Map<string, T>();
+  const newToUpload: T[] = [];
+
+  for (const r of remote || []) {
+    if (r && r.id) {
+      map.set(r.id, r);
+    }
+  }
+
+  for (const l of local || []) {
+    if (!l || !l.id) continue;
+
+    if (map.has(l.id)) {
+      if (pendingUploadIds.has(l.id)) {
+        map.set(l.id, l);
+        newToUpload.push(l);
+      } else {
+        const r = map.get(l.id)!;
+        const lMs = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+        const rMs = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+        if (lMs > rMs) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    } else {
+      if (!isAuthoritative) {
+        map.set(l.id, l);
+        if (!syncedIds.has(l.id) || pendingUploadIds.has(l.id)) {
+          newToUpload.push(l);
+        }
+      } else {
+        const wasSyncedBefore = syncedIds.has(l.id);
+        const isPendingUpload = pendingUploadIds.has(l.id);
+
+        if (deletions.has(l.id)) {
+          const deletedAt = deletions.get(l.id)!;
+          const localUpdated = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          const remoteDeleted = new Date(deletedAt).getTime();
+
+          if (remoteDeleted >= localUpdated) {
+            removePendingWrite(pendingWriteType, l.id);
+            Storage.unmarkSynced(l.id);
+          } else {
+            map.set(l.id, l);
+            newToUpload.push(l);
+          }
+        } else if (!wasSyncedBefore || isPendingUpload) {
+          map.set(l.id, l);
+          newToUpload.push(l);
+        }
+      }
+    }
+  }
+
+  return { merged: Array.from(map.values()), newToUpload };
+};
 
 const mergeRemoteHabits = (
   local: Habit[],
@@ -601,6 +686,16 @@ const purgeCloudDemoItems = async (
 };
 import { getTodayKey, addDays } from '@/lib/date-utils';
 import {
+  buildRecurringTodoSeriesId,
+  findMissingRecurringTodoInstances,
+  generateRecurringTodoInstances,
+  getRecurrenceSummaryText,
+  getTodoHorizonEndDate,
+  isTodoScheduledForDate,
+  normalizeRecurrenceDays,
+  normalizeTodoRecurrence,
+} from '@/lib/todo-recurrence';
+import {
   calculateDayProgress,
   calculateHabitStreak,
   calculateOverallStreaks,
@@ -620,7 +715,9 @@ import {
   syncCompletionToCloud,
   deleteCompletionFromCloud,
   syncTodoToCloud,
+  syncTodosBatchToCloud,
   deleteTodoFromCloud,
+  deleteTodosBatchFromCloud,
   syncGoalToCloud,
   deleteGoalFromCloud,
   syncSleepLogToCloud,
@@ -630,6 +727,13 @@ import {
   syncSavingsTransactionToCloud,
   deleteSavingsTransactionFromCloud,
   syncSavingsSettingsToCloud,
+  syncStudySessionToCloud,
+  deleteStudySessionFromCloud,
+  syncActiveStudyTimerToCloud,
+  syncStopwatchRecordToCloud,
+  deleteStopwatchRecordFromCloud,
+  syncStudyNoteToCloud,
+  deleteStudyNoteFromCloud,
   syncSettingsToCloud,
   uploadInitialDataToCloud,
   checkHasCloudData,
@@ -666,6 +770,8 @@ import {
   playNotificationSound,
   requestAIDailyBriefing,
   createNotificationsBackupJson,
+  pushBrowserNotification,
+  triggerWebPushNotification,
 } from '@/lib/notification-service';
 import {
   evaluateAllReminders,
@@ -673,6 +779,7 @@ import {
   getNotificationDismissalKeys,
   isNotificationDismissed,
   normalizeTimestampMs,
+  getNextUpcomingReminderDelayMs,
 } from '@/lib/reminder-engine';
 import { recordNotificationDiagnostic } from '@/lib/notification-diagnostics';
 import firebaseConfig from '@/firebase-applet-config.json';
@@ -721,8 +828,8 @@ interface LifeOSContextType {
 
   // Todo Operations
   createTodo: (todo: Omit<Todo, 'id' | 'createdAt' | 'updatedAt' | 'order'>) => { success: boolean; error?: string };
-  updateTodo: (id: string, updates: Partial<Todo>) => { success: boolean; error?: string };
-  deleteTodo: (id: string) => void;
+  updateTodo: (id: string, updates: Partial<Todo>, scope?: 'single' | 'series') => { success: boolean; error?: string };
+  deleteTodo: (id: string, scope?: 'single' | 'series') => void;
   toggleTodoCompletion: (id: string) => void;
   reorderTodos: (dateKey: string, sourceIndex: number, destIndex: number) => void;
   getTodosForDate: (dateKey: string) => Todo[];
@@ -814,6 +921,49 @@ interface LifeOSContextType {
   updateNotificationSettings: (settings: Partial<NotificationSettings>) => Promise<void>;
   generateAIDailyBriefing: (forceRefresh?: boolean) => Promise<AIDailyBriefing | null>;
   evaluateNotificationHeartbeat: () => Promise<void>;
+
+  // Study System State & Operations
+  studySessions: StudySession[];
+  activeStudyTimer: ActiveStudyTimerState | null;
+  stopwatchRecords: StopwatchRecord[];
+  activeStopwatch: ActiveStopwatchState | null;
+  studyNotes: StudyNote[];
+  studyDashboardSummary: StudyDashboardSummary;
+  getStudyAnalytics: (
+    range: StudyAnalyticsRange,
+    customStartDate?: string,
+    customEndDate?: string
+  ) => StudyAnalyticsSummary;
+  startStudyTimer: (
+    taskId?: string | null,
+    customLabel?: string,
+    notes?: string
+  ) => { success: boolean; error?: string };
+  pauseStudyTimer: () => void;
+  resumeStudyTimer: () => void;
+  updateActiveStudyTimerNotes: (notes: string) => void;
+  finishStudyTimer: (overrideNotes?: string) => StudySession | null;
+  cancelStudyTimer: () => void;
+  deleteStudySession: (id: string) => void;
+  startStopwatch: (title?: string) => void;
+  pauseStopwatch: () => void;
+  resumeStopwatch: () => void;
+  lapStopwatch: (label?: string) => void;
+  resetStopwatch: () => void;
+  stopAndSaveStopwatch: (title?: string, notes?: string) => StopwatchRecord | null;
+  deleteStopwatchRecord: (id: string) => void;
+  convertStopwatchToStudySession: (
+    recordId: string,
+    taskId?: string | null
+  ) => { success: boolean; session?: StudySession; error?: string };
+  createStudyNote: (
+    input: Omit<StudyNote, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => StudyNote;
+  updateStudyNote: (
+    id: string,
+    updates: Partial<Omit<StudyNote, 'id' | 'createdAt'>>
+  ) => StudyNote | null;
+  deleteStudyNote: (id: string) => Promise<void>;
 }
 
 const LifeOSContext = createContext<LifeOSContextType | null>(null);
@@ -848,6 +998,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(DEFAULT_NOTIFICATION_SETTINGS);
   const [aiBriefings, setAIBriefings] = useState<AIDailyBriefing[]>([]);
 
+  // Study System state
+  const [studySessions, setStudySessions] = useState<StudySession[]>([]);
+  const [activeStudyTimer, setActiveStudyTimer] = useState<ActiveStudyTimerState | null>(null);
+  const [stopwatchRecords, setStopwatchRecords] = useState<StopwatchRecord[]>([]);
+  const [activeStopwatch, setActiveStopwatch] = useState<ActiveStopwatchState | null>(null);
+  const [studyNotes, setStudyNotes] = useState<StudyNote[]>([]);
+
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [selectedDate, setSelectedDate] = useState<string>(getTodayKey);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -867,6 +1024,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const customRemindersRef = useRef<ReminderDefinition[]>(customReminders);
   const notificationSettingsRef = useRef<NotificationSettings>(DEFAULT_NOTIFICATION_SETTINGS);
   const aiBriefingsRef = useRef<AIDailyBriefing[]>(aiBriefings);
+  const studySessionsRef = useRef<StudySession[]>(studySessions);
+  const activeStudyTimerRef = useRef<ActiveStudyTimerState | null>(activeStudyTimer);
+  const stopwatchRecordsRef = useRef<StopwatchRecord[]>(stopwatchRecords);
+  const activeStopwatchRef = useRef<ActiveStopwatchState | null>(activeStopwatch);
+  const studyNotesRef = useRef<StudyNote[]>(studyNotes);
   const isWakingRef = useRef<boolean>(false);
   const deletionsRef = useRef<Map<string, string>>(new Map());
   const pendingDeletedNotifIdsRef = useRef<Set<string>>(new Set());
@@ -882,7 +1044,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   const initialSessionHeartbeatDoneRef = useRef<boolean>(false);
   const lastHeartbeatRunAtRef = useRef<number>(0);
   const heartbeatDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const evaluateHeartbeatRef = useRef<() => Promise<void>>(async () => {});
+  const evaluateHeartbeatRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
 
   useEffect(() => { userRef.current = user; }, [user]);
   useEffect(() => { habitsRef.current = habits; }, [habits]);
@@ -898,6 +1060,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { customRemindersRef.current = customReminders; }, [customReminders]);
   useEffect(() => { notificationSettingsRef.current = notificationSettings || DEFAULT_NOTIFICATION_SETTINGS; }, [notificationSettings]);
   useEffect(() => { aiBriefingsRef.current = aiBriefings; }, [aiBriefings]);
+  useEffect(() => { studySessionsRef.current = studySessions; }, [studySessions]);
+  useEffect(() => { activeStudyTimerRef.current = activeStudyTimer; }, [activeStudyTimer]);
+  useEffect(() => { stopwatchRecordsRef.current = stopwatchRecords; }, [stopwatchRecords]);
+  useEffect(() => { activeStopwatchRef.current = activeStopwatch; }, [activeStopwatch]);
+  useEffect(() => { studyNotesRef.current = studyNotes; }, [studyNotes]);
 
   const persistGoals = useCallback((newGoals: Goal[]) => {
     setGoals(newGoals);
@@ -978,7 +1145,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
           const storedNotifSettings = Storage.getNotificationSettings(initialUid);
           if (storedNotifSettings) {
-            const merged = { ...DEFAULT_NOTIFICATION_SETTINGS, ...storedNotifSettings };
+            const merged: NotificationSettings = {
+              ...DEFAULT_NOTIFICATION_SETTINGS,
+              ...storedNotifSettings,
+              categories: {
+                ...DEFAULT_NOTIFICATION_SETTINGS.categories,
+                ...(storedNotifSettings.categories || {}),
+              },
+              quietHours: {
+                ...DEFAULT_NOTIFICATION_SETTINGS.quietHours,
+                ...(storedNotifSettings.quietHours || {}),
+              },
+            };
             setNotificationSettings(merged);
             notificationSettingsRef.current = merged;
           }
@@ -986,6 +1164,26 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           const storedBriefings = Storage.getAIBriefings(initialUid);
           setAIBriefings(storedBriefings);
           aiBriefingsRef.current = storedBriefings;
+
+          const storedStudySessions = Storage.getStudySessions(initialUid);
+          setStudySessions(storedStudySessions);
+          studySessionsRef.current = storedStudySessions;
+
+          const storedActiveStudyTimer = Storage.getActiveStudyTimer(initialUid);
+          setActiveStudyTimer(storedActiveStudyTimer);
+          activeStudyTimerRef.current = storedActiveStudyTimer;
+
+          const storedStopwatchRecords = Storage.getStopwatchRecords(initialUid);
+          setStopwatchRecords(storedStopwatchRecords);
+          stopwatchRecordsRef.current = storedStopwatchRecords;
+
+          const storedActiveStopwatch = Storage.getActiveStopwatch(initialUid);
+          setActiveStopwatch(storedActiveStopwatch);
+          activeStopwatchRef.current = storedActiveStopwatch;
+
+          const storedStudyNotes = Storage.getStudyNotes(initialUid);
+          setStudyNotes(storedStudyNotes);
+          studyNotesRef.current = storedStudyNotes;
         } catch {}
       } catch (err) {
         console.warn('Failed to load local storage state:', err);
@@ -1091,6 +1289,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           aiBriefingsRef.current = [];
           setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
           notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
+          setStudySessions([]);
+          studySessionsRef.current = [];
+          setActiveStudyTimer(null);
+          activeStudyTimerRef.current = null;
+          setStopwatchRecords([]);
+          stopwatchRecordsRef.current = [];
+          setActiveStopwatch(null);
+          activeStopwatchRef.current = null;
+          setStudyNotes([]);
+          studyNotesRef.current = [];
           deletionsRef.current = new Map();
           pendingDeletedNotifIdsRef.current.clear();
           dismissedNotifKeysRef.current.clear();
@@ -1538,7 +1746,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
           onNotificationSettings: (cloudSettings) => {
             if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
             if (!cloudSettings) return;
-            const merged = { ...DEFAULT_NOTIFICATION_SETTINGS, ...cloudSettings };
+            const merged: NotificationSettings = {
+              ...DEFAULT_NOTIFICATION_SETTINGS,
+              ...cloudSettings,
+              categories: {
+                ...DEFAULT_NOTIFICATION_SETTINGS.categories,
+                ...(cloudSettings.categories || {}),
+              },
+              quietHours: {
+                ...DEFAULT_NOTIFICATION_SETTINGS.quietHours,
+                ...(cloudSettings.quietHours || {}),
+              },
+            };
             setNotificationSettings(merged);
             notificationSettingsRef.current = merged;
             Storage.saveNotificationSettings(merged, currentUser.uid);
@@ -1549,6 +1768,126 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
             setAIBriefings(cloudBriefings);
             aiBriefingsRef.current = cloudBriefings;
             Storage.saveAIBriefings(cloudBriefings, currentUser.uid);
+          },
+          onStudySessions: (cloudSessions, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
+            if (!cloudSessions || meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const synced = Storage.getSyncedIds(currentUser.uid);
+            const pendingIds = getPendingWriteIds('study_session', currentUser.uid);
+            const currentLocal = isAccountSwitchActive
+              ? []
+              : studySessionsRef.current.length > 0
+                ? studySessionsRef.current
+                : Storage.getStudySessions(currentUser.uid);
+            const { merged, newToUpload } = mergeRemoteTimestampedEntities(
+              currentLocal,
+              cloudSessions,
+              synced,
+              pendingIds,
+              'study_session',
+              isAuthoritative,
+              deletionsRef.current
+            );
+            merged.sort((a, b) => b.startTimestamp - a.startTimestamp);
+            setStudySessions(merged);
+            studySessionsRef.current = merged;
+            Storage.saveStudySessions(merged, currentUser.uid);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((s) => s.id), currentUser.uid);
+            }
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
+              newToUpload.forEach((s) => syncStudySessionToCloud(currentUser.uid, s));
+            }
+          },
+          onActiveStudyTimer: (cloudTimer, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
+            if (meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const pendingSet = getPendingWriteIds('active_study_timer', currentUser.uid);
+            const pendingDel = getPendingWriteIds('active_study_timer_delete', currentUser.uid);
+            if (pendingSet.size > 0 || pendingDel.size > 0) return;
+
+            const currentLocal = activeStudyTimerRef.current;
+            if (cloudTimer) {
+              const cloudMs = cloudTimer.updatedAt ? new Date(cloudTimer.updatedAt).getTime() : 0;
+              const localMs = currentLocal?.updatedAt ? new Date(currentLocal.updatedAt).getTime() : 0;
+              if (!currentLocal || cloudMs >= localMs) {
+                setActiveStudyTimer(cloudTimer);
+                activeStudyTimerRef.current = cloudTimer;
+                Storage.saveActiveStudyTimer(cloudTimer, currentUser.uid);
+              }
+            } else if (isAuthoritative && currentLocal) {
+              // Check if local was freshly started after initial session sync; only upload if never synced
+              const synced = Storage.getSyncedIds(currentUser.uid);
+              if (synced.has(currentLocal.sessionId)) {
+                setActiveStudyTimer(null);
+                activeStudyTimerRef.current = null;
+                Storage.saveActiveStudyTimer(null, currentUser.uid);
+              }
+            }
+          },
+          onStopwatchRecords: (cloudRecords, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
+            if (!cloudRecords || meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const synced = Storage.getSyncedIds(currentUser.uid);
+            const pendingIds = getPendingWriteIds('stopwatch_record', currentUser.uid);
+            const currentLocal = isAccountSwitchActive
+              ? []
+              : stopwatchRecordsRef.current.length > 0
+                ? stopwatchRecordsRef.current
+                : Storage.getStopwatchRecords(currentUser.uid);
+            const { merged, newToUpload } = mergeRemoteTimestampedEntities(
+              currentLocal,
+              cloudRecords,
+              synced,
+              pendingIds,
+              'stopwatch_record',
+              isAuthoritative,
+              deletionsRef.current
+            );
+            merged.sort((a, b) => b.startTimestamp - a.startTimestamp);
+            setStopwatchRecords(merged);
+            stopwatchRecordsRef.current = merged;
+            Storage.saveStopwatchRecords(merged, currentUser.uid);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((r) => r.id), currentUser.uid);
+            }
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
+              newToUpload.forEach((r) => syncStopwatchRecordToCloud(currentUser.uid, r));
+            }
+          },
+          onStudyNotes: (cloudNotes, meta) => {
+            if (!isEffectActive || gen !== authGeneration || userRef.current?.uid !== currentUser.uid) return;
+            if (!cloudNotes || meta?.hasPendingWrites) return;
+            const isAuthoritative = !meta?.fromCache;
+            const synced = Storage.getSyncedIds(currentUser.uid);
+            const pendingIds = getPendingWriteIds('study_note', currentUser.uid);
+            const currentLocal = isAccountSwitchActive
+              ? []
+              : studyNotesRef.current.length > 0
+                ? studyNotesRef.current
+                : Storage.getStudyNotes(currentUser.uid);
+            const { merged, newToUpload } = mergeRemoteTimestampedEntities(
+              currentLocal,
+              cloudNotes,
+              synced,
+              pendingIds,
+              'study_note',
+              isAuthoritative,
+              deletionsRef.current
+            );
+            merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+            setStudyNotes(merged);
+            studyNotesRef.current = merged;
+            Storage.saveStudyNotes(merged, currentUser.uid);
+            if (isAuthoritative) {
+              Storage.markSynced(merged.map((n) => n.id), currentUser.uid);
+            }
+            if (isAuthoritative && newToUpload.length > 0 && !isAccountSwitchActive) {
+              newToUpload.forEach((n) => syncStudyNoteToCloud(currentUser.uid, n));
+            }
           },
         });
 
@@ -1593,7 +1932,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         setSettings(INITIAL_SETTINGS);
         settingsRef.current = INITIAL_SETTINGS;
 
-        // Clean user notifications on sign out
+        // Clean user notifications & study state on sign out
         setNotifications([]);
         notificationsRef.current = [];
         setCustomReminders([]);
@@ -1602,6 +1941,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         aiBriefingsRef.current = [];
         setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
         notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
+        setStudySessions([]);
+        studySessionsRef.current = [];
+        setActiveStudyTimer(null);
+        activeStudyTimerRef.current = null;
+        setStopwatchRecords([]);
+        stopwatchRecordsRef.current = [];
+        setActiveStopwatch(null);
+        activeStopwatchRef.current = null;
+        setStudyNotes([]);
+        studyNotesRef.current = [];
 
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
@@ -1693,6 +2042,42 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
               Storage.markSynced(compMerge.merged.map((c) => c.id), uid);
               if (compMerge.newToUpload.length > 0) {
                 compMerge.newToUpload.forEach((c) => syncCompletionToCloud(uid, c));
+              }
+            }
+            if (cloudData.studySessions !== null) {
+              const pendingStudy = getPendingWriteIds('study_session', uid);
+              const studyMerge = mergeRemoteTimestampedEntities(studySessionsRef.current, cloudData.studySessions, synced, pendingStudy, 'study_session', true, deletions);
+              studyMerge.merged.sort((a, b) => b.startTimestamp - a.startTimestamp);
+              setStudySessions(studyMerge.merged);
+              studySessionsRef.current = studyMerge.merged;
+              Storage.saveStudySessions(studyMerge.merged, uid);
+              Storage.markSynced(studyMerge.merged.map((s) => s.id), uid);
+              if (studyMerge.newToUpload.length > 0) {
+                studyMerge.newToUpload.forEach((s) => syncStudySessionToCloud(uid, s));
+              }
+            }
+            if (cloudData.stopwatchRecords !== null) {
+              const pendingSw = getPendingWriteIds('stopwatch_record', uid);
+              const swMerge = mergeRemoteTimestampedEntities(stopwatchRecordsRef.current, cloudData.stopwatchRecords, synced, pendingSw, 'stopwatch_record', true, deletions);
+              swMerge.merged.sort((a, b) => b.startTimestamp - a.startTimestamp);
+              setStopwatchRecords(swMerge.merged);
+              stopwatchRecordsRef.current = swMerge.merged;
+              Storage.saveStopwatchRecords(swMerge.merged, uid);
+              Storage.markSynced(swMerge.merged.map((r) => r.id), uid);
+              if (swMerge.newToUpload.length > 0) {
+                swMerge.newToUpload.forEach((r) => syncStopwatchRecordToCloud(uid, r));
+              }
+            }
+            if (cloudData.studyNotes !== null) {
+              const pendingNotes = getPendingWriteIds('study_note', uid);
+              const notesMerge = mergeRemoteTimestampedEntities(studyNotesRef.current, cloudData.studyNotes, synced, pendingNotes, 'study_note', true, deletions);
+              notesMerge.merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+              setStudyNotes(notesMerge.merged);
+              studyNotesRef.current = notesMerge.merged;
+              Storage.saveStudyNotes(notesMerge.merged, uid);
+              Storage.markSynced(notesMerge.merged.map((n) => n.id), uid);
+              if (notesMerge.newToUpload.length > 0) {
+                notesMerge.newToUpload.forEach((n) => syncStudyNoteToCloud(uid, n));
               }
             }
             if (cloudData.settings) {
@@ -1940,6 +2325,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       aiBriefingsRef.current = [];
       setNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS);
       notificationSettingsRef.current = DEFAULT_NOTIFICATION_SETTINGS;
+      setStudySessions([]);
+      studySessionsRef.current = [];
+      setActiveStudyTimer(null);
+      activeStudyTimerRef.current = null;
+      setStopwatchRecords([]);
+      stopwatchRecordsRef.current = [];
+      setActiveStopwatch(null);
+      activeStopwatchRef.current = null;
+      setStudyNotes([]);
+      studyNotesRef.current = [];
 
       showToast({
         type: 'info',
@@ -2309,18 +2704,21 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   // Local persistence helpers
   const persistHabits = useCallback((newHabits: Habit[]) => {
+    habitsRef.current = newHabits;
     setHabits(newHabits);
     Storage.saveHabits(newHabits);
     requestServiceWorkerBackgroundSync();
   }, [requestServiceWorkerBackgroundSync]);
 
   const persistCompletions = useCallback((newCompletions: HabitCompletion[]) => {
+    completionsRef.current = newCompletions;
     setCompletions(newCompletions);
     Storage.saveCompletions(newCompletions);
     requestServiceWorkerBackgroundSync();
   }, [requestServiceWorkerBackgroundSync]);
 
   const persistTodos = useCallback((newTodos: Todo[]) => {
+    todosRef.current = newTodos;
     setTodos(newTodos);
     Storage.saveTodos(newTodos);
     requestServiceWorkerBackgroundSync();
@@ -2384,10 +2782,18 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       syncToCloudNow((uid) => syncHabitToCloud(uid, newHabit));
 
+      if (newHabit.reminderTime) {
+        setTimeout(() => {
+          evaluateHeartbeatRef.current(true).catch(() => {});
+        }, 150);
+      }
+
       showToast({
         type: 'success',
         title: 'Habit Created',
-        message: `"${newHabit.name}" has been added to your schedule.`,
+        message: newHabit.reminderTime
+          ? `"${newHabit.name}" added with daily reminder at ${newHabit.reminderTime}.`
+          : `"${newHabit.name}" has been added to your schedule.`,
       });
       return { success: true };
     },
@@ -2418,6 +2824,11 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
       if (modifiedHabit) {
         syncToCloudNow((uid) => syncHabitToCloud(uid, modifiedHabit!));
+        if ((modifiedHabit as Habit).reminderTime) {
+          setTimeout(() => {
+            evaluateHeartbeatRef.current(true).catch(() => {});
+          }, 150);
+        }
       }
 
       showToast({
@@ -2570,13 +2981,106 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       if (!todoData.title.trim()) {
         return { success: false, error: 'To-Do title cannot be empty.' };
       }
+      if (!todoData.date) {
+        return { success: false, error: 'Please choose a valid date.' };
+      }
 
-      const dateTodos = todos.filter((t) => t.date === todoData.date);
+      const recurrence = normalizeTodoRecurrence(todoData.recurrence);
+      const currentTodos = todosRef.current;
+
+      if (recurrence !== 'none') {
+        const seriesId = buildRecurringTodoSeriesId();
+        const normalizedDays = normalizeRecurrenceDays(
+          recurrence,
+          todoData.date,
+          todoData.recurrenceDays
+        );
+        const nowIso = new Date().toISOString();
+        const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+        const deletedIds = new Set<string>([
+          ...Storage.getDeletedIds(),
+          ...deletionsRef.current.keys(),
+        ]);
+        const skippedOccurrences = Storage.getSkippedTodoOccurrences(uid);
+        const currentTodayKey = getTodayKey();
+        const horizonEndDate = getTodoHorizonEndDate(
+          currentTodayKey,
+          todoData.date,
+          selectedDate
+        );
+
+        let generated = generateRecurringTodoInstances(
+          {
+            ...todoData,
+            title: todoData.title.trim(),
+            recurrence,
+            recurrenceDays: normalizedDays.length > 0 ? normalizedDays : undefined,
+            recurrenceSeriesId: seriesId,
+            recurrenceStartDate: todoData.recurrenceStartDate || todoData.date,
+          },
+          {
+            seriesId,
+            startDate: todoData.date,
+            horizonEndDate,
+            existingTodos: currentTodos,
+            deletedIds,
+            skippedOccurrences,
+            nowIso,
+          }
+        );
+
+        // Safety fallback if custom selection somehow yielded 0 dates within horizon
+        if (generated.length === 0) {
+          const dateTodos = currentTodos.filter((t) => t.date === todoData.date);
+          const maxOrder = dateTodos.reduce((max, t) => Math.max(max, t.order ?? 0), -1);
+          generated = [
+            {
+              ...todoData,
+              id: `todo_rec_${seriesId}_${todoData.date}`,
+              title: todoData.title.trim(),
+              category: todoData.category || 'General',
+              order: maxOrder + 1,
+              recurrence,
+              recurrenceDays: normalizedDays.length > 0 ? normalizedDays : undefined,
+              recurrenceSeriesId: seriesId,
+              recurrenceStartDate: todoData.recurrenceStartDate || todoData.date,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+          ];
+        }
+
+        generated.forEach((t) => Storage.unmarkDeleted(t.id));
+        const updated = [...generated, ...currentTodos];
+        persistTodos(updated);
+
+        syncToCloudNow((activeUid) => syncTodosBatchToCloud(activeUid, generated));
+
+        if (todoData.dueTime) {
+          setTimeout(() => {
+            evaluateHeartbeatRef.current(true).catch(() => {});
+          }, 150);
+        }
+
+        const scheduleSummary = getRecurrenceSummaryText(recurrence, normalizedDays, todoData.date);
+        showToast({
+          type: 'success',
+          title: 'Recurring To-Do Scheduled',
+          message: `"${todoData.title.trim()}" (${scheduleSummary}) — ${generated.length} upcoming task${generated.length > 1 ? 's' : ''} created.`,
+        });
+        return { success: true };
+      }
+
+      const dateTodos = currentTodos.filter((t) => t.date === todoData.date);
       const maxOrder = dateTodos.reduce((max, t) => Math.max(max, t.order ?? 0), -1);
 
       const newTodo: Todo = {
         ...todoData,
         title: todoData.title.trim(),
+        recurrence: undefined,
+        recurrenceDays: undefined,
+        recurrenceSeriesId: undefined,
+        recurrenceStartDate: undefined,
         id: `todo_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         order: maxOrder + 1,
         createdAt: new Date().toISOString(),
@@ -2584,10 +3088,16 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       };
 
       Storage.unmarkDeleted(newTodo.id);
-      const updated = [newTodo, ...todos];
+      const updated = [newTodo, ...currentTodos];
       persistTodos(updated);
 
       syncToCloudNow((uid) => syncTodoToCloud(uid, newTodo));
+
+      if (newTodo.dueTime) {
+        setTimeout(() => {
+          evaluateHeartbeatRef.current(true).catch(() => {});
+        }, 150);
+      }
 
       showToast({
         type: 'success',
@@ -2596,33 +3106,299 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [todos, showToast, persistTodos, syncToCloudNow]
+    [selectedDate, showToast, persistTodos, syncToCloudNow]
   );
 
   const updateTodo = useCallback(
-    (id: string, updates: Partial<Todo>) => {
+    (id: string, updates: Partial<Todo>, scope: 'single' | 'series' = 'single') => {
       if (updates.title !== undefined && !updates.title.trim()) {
         return { success: false, error: 'To-Do title cannot be empty.' };
       }
 
+      const currentTodos = todosRef.current;
+      const target = currentTodos.find((t) => t.id === id);
+      if (!target) {
+        return { success: false, error: 'Task not found.' };
+      }
+
+      const nowIso = new Date().toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+
+      // Series-wide update for an existing recurring series (affects anchor & upcoming tasks >= target.date)
+      if (scope === 'series' && target.recurrenceSeriesId) {
+        const seriesId = target.recurrenceSeriesId;
+        const nextRecurrence = normalizeTodoRecurrence(updates.recurrence ?? target.recurrence);
+        const anchorDate = updates.date || target.date;
+        const nextDays = normalizeRecurrenceDays(
+          nextRecurrence,
+          anchorDate,
+          updates.recurrenceDays ?? target.recurrenceDays
+        );
+
+        // If user switched recurrence back to 'none', keep edited task as one-time & remove future uncompleted occurrences
+        if (nextRecurrence === 'none') {
+          const toDeleteIds: string[] = [];
+          const nextTodos: Todo[] = [];
+          let updatedAnchor: Todo | null = null;
+
+          for (const t of currentTodos) {
+            if (t.id === target.id) {
+              updatedAnchor = {
+                ...t,
+                ...updates,
+                title: updates.title !== undefined ? updates.title.trim() : t.title,
+                date: anchorDate,
+                recurrence: undefined,
+                recurrenceDays: undefined,
+                recurrenceSeriesId: undefined,
+                recurrenceStartDate: undefined,
+                updatedAt: nowIso,
+              };
+              nextTodos.push(updatedAnchor);
+            } else if (t.recurrenceSeriesId === seriesId && t.date > target.date && !t.completed) {
+              toDeleteIds.push(t.id);
+              Storage.unmarkSynced(t.id);
+              Storage.markDeleted(t.id);
+              deletionsRef.current.set(t.id, nowIso);
+            } else {
+              nextTodos.push(t);
+            }
+          }
+
+          Storage.clearSkippedTodoOccurrencesForSeries(seriesId, uid);
+          persistTodos(nextTodos);
+          syncToCloudNow(async (activeUid) => {
+            if (updatedAnchor) await syncTodoToCloud(activeUid, updatedAnchor);
+            if (toDeleteIds.length > 0) await deleteTodosBatchFromCloud(activeUid, toDeleteIds);
+          });
+
+          showToast({
+            type: 'info',
+            title: 'Series Converted to One-Time',
+            message: 'Future uncompleted occurrences were removed.',
+          });
+          return { success: true };
+        }
+
+        // Update this & upcoming matching tasks, remove uncompleted future mismatches, generate newly matching dates
+        const seriesStart = target.recurrenceStartDate && target.recurrenceStartDate < anchorDate
+          ? target.recurrenceStartDate
+          : anchorDate;
+        const currentTodayKey = getTodayKey();
+        const horizonEndDate = getTodoHorizonEndDate(currentTodayKey, anchorDate, selectedDate);
+        const toDeleteIds: string[] = [];
+        const toUpsert: Todo[] = [];
+        const keptTodos: Todo[] = [];
+
+        for (const t of currentTodos) {
+          if (t.recurrenceSeriesId === seriesId && t.date >= target.date) {
+            const isTarget = t.id === target.id;
+            const stillMatches = isTodoScheduledForDate(nextRecurrence, nextDays, seriesStart, t.date);
+
+            if (!isTarget && !t.completed && !stillMatches) {
+              toDeleteIds.push(t.id);
+              Storage.unmarkSynced(t.id);
+              Storage.markDeleted(t.id);
+              deletionsRef.current.set(t.id, nowIso);
+              continue;
+            }
+
+            const nextTaskType = updates.taskType !== undefined ? updates.taskType : t.taskType;
+            const nextEstimatedDuration =
+              nextTaskType === 'study'
+                ? updates.estimatedDurationMinutes !== undefined
+                  ? updates.estimatedDurationMinutes
+                  : t.estimatedDurationMinutes
+                : undefined;
+
+            const updatedItem: Todo = {
+              ...t,
+              title: updates.title !== undefined ? updates.title.trim() : t.title,
+              priority: updates.priority ?? t.priority,
+              category: updates.category !== undefined ? updates.category : t.category,
+              dueTime: updates.dueTime !== undefined ? updates.dueTime : t.dueTime,
+              notes: updates.notes !== undefined ? updates.notes : t.notes,
+              taskType: nextTaskType,
+              estimatedDurationMinutes: nextEstimatedDuration,
+              completed: isTarget && updates.completed !== undefined ? updates.completed : t.completed,
+              recurrence: nextRecurrence,
+              recurrenceDays: nextDays.length > 0 ? nextDays : undefined,
+              recurrenceStartDate: seriesStart,
+              updatedAt: nowIso,
+            };
+            keptTodos.push(updatedItem);
+            toUpsert.push(updatedItem);
+          } else {
+            keptTodos.push(t);
+          }
+        }
+
+        const deletedIds = new Set<string>([
+          ...Storage.getDeletedIds(),
+          ...deletionsRef.current.keys(),
+        ]);
+        const skippedOccurrences = Storage.getSkippedTodoOccurrences(uid);
+
+        const templateTaskType = updates.taskType !== undefined ? updates.taskType : target.taskType;
+        const templateEstimatedDuration =
+          templateTaskType === 'study'
+            ? updates.estimatedDurationMinutes !== undefined
+              ? updates.estimatedDurationMinutes
+              : target.estimatedDurationMinutes
+            : undefined;
+
+        const newlyGenerated = generateRecurringTodoInstances(
+          {
+            title: updates.title !== undefined ? updates.title.trim() : target.title,
+            date: anchorDate,
+            priority: updates.priority ?? target.priority,
+            category: updates.category !== undefined ? updates.category : target.category,
+            dueTime: updates.dueTime !== undefined ? updates.dueTime : target.dueTime,
+            notes: updates.notes !== undefined ? updates.notes : target.notes,
+            taskType: templateTaskType,
+            estimatedDurationMinutes: templateEstimatedDuration,
+            completed: false,
+            recurrence: nextRecurrence,
+            recurrenceDays: nextDays.length > 0 ? nextDays : undefined,
+            recurrenceSeriesId: seriesId,
+            recurrenceStartDate: seriesStart,
+          },
+          {
+            seriesId,
+            startDate: anchorDate,
+            horizonEndDate,
+            existingTodos: keptTodos,
+            deletedIds,
+            skippedOccurrences,
+            nowIso,
+          }
+        );
+
+        newlyGenerated.forEach((g) => Storage.unmarkDeleted(g.id));
+        const finalTodos = [...keptTodos, ...newlyGenerated];
+        persistTodos(finalTodos);
+
+        const allToSync = [...toUpsert, ...newlyGenerated];
+        syncToCloudNow(async (activeUid) => {
+          if (allToSync.length > 0) await syncTodosBatchToCloud(activeUid, allToSync);
+          if (toDeleteIds.length > 0) await deleteTodosBatchFromCloud(activeUid, toDeleteIds);
+        });
+
+        if ((updates.dueTime ?? target.dueTime)) {
+          setTimeout(() => {
+            evaluateHeartbeatRef.current(true).catch(() => {});
+          }, 150);
+        }
+
+        showToast({
+          type: 'info',
+          title: 'Recurring Series Updated',
+          message: 'Changes applied across this task and upcoming scheduled occurrences.',
+        });
+        return { success: true };
+      }
+
+      // Single-task update (including upgrading a one-time task into a recurring series)
+      const requestedRecurrence = updates.recurrence !== undefined
+        ? normalizeTodoRecurrence(updates.recurrence)
+        : normalizeTodoRecurrence(target.recurrence);
+
+      const isUpgradingOneTimeToRecurring =
+        !target.recurrenceSeriesId && requestedRecurrence !== 'none';
+
+      const newSeriesId = isUpgradingOneTimeToRecurring ? buildRecurringTodoSeriesId() : target.recurrenceSeriesId;
+      const anchorDate = updates.date || target.date;
+      const nextDays = normalizeRecurrenceDays(
+        requestedRecurrence,
+        anchorDate,
+        updates.recurrenceDays ?? target.recurrenceDays
+      );
+
       let modified: Todo | null = null;
-      const updated = todos.map((t) => {
+      const updated = currentTodos.map((t) => {
         if (t.id === id) {
           modified = {
             ...t,
             ...updates,
             title: updates.title !== undefined ? updates.title.trim() : t.title,
-            updatedAt: new Date().toISOString(),
+            recurrence: requestedRecurrence === 'none' ? undefined : requestedRecurrence,
+            recurrenceDays:
+              requestedRecurrence === 'none'
+                ? undefined
+                : nextDays.length > 0
+                  ? nextDays
+                  : undefined,
+            recurrenceSeriesId:
+              requestedRecurrence === 'none' ? undefined : newSeriesId,
+            recurrenceStartDate:
+              requestedRecurrence === 'none'
+                ? undefined
+                : t.recurrenceStartDate || anchorDate,
+            updatedAt: nowIso,
           };
           return modified;
         }
         return t;
       });
 
+      if (isUpgradingOneTimeToRecurring && modified && newSeriesId) {
+        const currentTodayKey = getTodayKey();
+        const horizonEndDate = getTodoHorizonEndDate(currentTodayKey, anchorDate, selectedDate);
+        const deletedIds = new Set<string>([
+          ...Storage.getDeletedIds(),
+          ...deletionsRef.current.keys(),
+        ]);
+        const skippedOccurrences = Storage.getSkippedTodoOccurrences(uid);
+
+        // Exclude anchorDate itself (already represented by `modified`)
+        const nextDayStart = addDays(anchorDate, 1);
+        const futureInstances =
+          nextDayStart <= horizonEndDate
+            ? generateRecurringTodoInstances(
+                {
+                  ...(modified as Todo),
+                  completed: false,
+                  recurrence: requestedRecurrence,
+                  recurrenceDays: nextDays.length > 0 ? nextDays : undefined,
+                  recurrenceSeriesId: newSeriesId,
+                  recurrenceStartDate: anchorDate,
+                },
+                {
+                  seriesId: newSeriesId,
+                  startDate: nextDayStart,
+                  horizonEndDate,
+                  existingTodos: updated,
+                  deletedIds,
+                  skippedOccurrences,
+                  nowIso,
+                }
+              )
+            : [];
+
+        futureInstances.forEach((f) => Storage.unmarkDeleted(f.id));
+        const finalTodos = [...updated, ...futureInstances];
+        persistTodos(finalTodos);
+
+        const batchToSync = [modified, ...futureInstances];
+        syncToCloudNow((activeUid) => syncTodosBatchToCloud(activeUid, batchToSync));
+
+        showToast({
+          type: 'success',
+          title: 'Recurrence Enabled',
+          message: `"${(modified as Todo).title}" updated and ${futureInstances.length} upcoming task${futureInstances.length === 1 ? '' : 's'} scheduled.`,
+        });
+        return { success: true };
+      }
+
       persistTodos(updated);
 
       if (modified) {
-        syncToCloudNow((uid) => syncTodoToCloud(uid, modified!));
+        syncToCloudNow((activeUid) => syncTodoToCloud(activeUid, modified!));
+        if ((modified as Todo).dueTime) {
+          setTimeout(() => {
+            evaluateHeartbeatRef.current(true).catch(() => {});
+          }, 150);
+        }
       }
 
       showToast({
@@ -2632,18 +3408,52 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       });
       return { success: true };
     },
-    [todos, showToast, persistTodos, syncToCloudNow]
+    [selectedDate, showToast, persistTodos, syncToCloudNow]
   );
 
   const deleteTodo = useCallback(
-    (id: string) => {
+    (id: string, scope: 'single' | 'series' = 'single') => {
+      const currentTodos = todosRef.current;
+      const target = currentTodos.find((t) => t.id === id);
+      const nowIso = new Date().toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+
+      if (scope === 'series' && target?.recurrenceSeriesId) {
+        const seriesId = target.recurrenceSeriesId;
+        const seriesTodos = currentTodos.filter((t) => t.recurrenceSeriesId === seriesId);
+        const idsToDelete = seriesTodos.map((t) => t.id);
+
+        for (const tid of idsToDelete) {
+          Storage.unmarkSynced(tid);
+          Storage.markDeleted(tid);
+          deletionsRef.current.set(tid, nowIso);
+        }
+        Storage.clearSkippedTodoOccurrencesForSeries(seriesId, uid);
+
+        const updated = currentTodos.filter((t) => t.recurrenceSeriesId !== seriesId);
+        persistTodos(updated);
+
+        syncToCloudNow((activeUid) => deleteTodosBatchFromCloud(activeUid, idsToDelete));
+
+        showToast({
+          type: 'info',
+          title: 'Recurring Series Deleted',
+          message: `Removed ${idsToDelete.length} task${idsToDelete.length === 1 ? '' : 's'} from "${target.title}".`,
+        });
+        return;
+      }
+
       Storage.unmarkSynced(id);
       Storage.markDeleted(id);
-      const target = todos.find((t) => t.id === id);
-      const updated = todos.filter((t) => t.id !== id);
+      deletionsRef.current.set(id, nowIso);
+      if (target?.recurrenceSeriesId) {
+        Storage.addSkippedTodoOccurrence(`${target.recurrenceSeriesId}_${target.date}`, uid);
+      }
+
+      const updated = currentTodos.filter((t) => t.id !== id);
       persistTodos(updated);
 
-      syncToCloudNow((uid) => deleteTodoFromCloud(uid, id));
+      syncToCloudNow((activeUid) => deleteTodoFromCloud(activeUid, id));
 
       showToast({
         type: 'info',
@@ -2651,7 +3461,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         message: target ? `"${target.title}" was deleted.` : 'Task deleted.',
       });
     },
-    [todos, showToast, persistTodos, syncToCloudNow]
+    [showToast, persistTodos, syncToCloudNow]
   );
 
   const toggleTodoCompletion = useCallback(
@@ -3465,6 +4275,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   }, [showToast]);
 
   const clearData = useCallback(() => {
+    const sessionsToDelete = studySessionsRef.current;
+    const stopwatchToDelete = stopwatchRecordsRef.current;
+    const notesToDelete = studyNotesRef.current;
+
     Storage.clearAllData();
     setHabits([]);
     setCompletions([]);
@@ -3472,21 +4286,36 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     setGoals([]);
     setSleepLogs([]);
     setActiveSleepSession(null);
+    setStudySessions([]);
+    studySessionsRef.current = [];
+    setActiveStudyTimer(null);
+    activeStudyTimerRef.current = null;
+    setStopwatchRecords([]);
+    stopwatchRecordsRef.current = [];
+    setActiveStopwatch(null);
+    activeStopwatchRef.current = null;
+    setStudyNotes([]);
+    studyNotesRef.current = [];
     setSettings(INITIAL_SETTINGS);
     setSelectedDate(getTodayKey());
 
     if (userRef.current) {
-      habits.forEach((h) => deleteHabitFromCloud(userRef.current!.uid, h.id));
-      completions.forEach((c) => deleteCompletionFromCloud(userRef.current!.uid, c.id));
-      todos.forEach((t) => deleteTodoFromCloud(userRef.current!.uid, t.id));
-      goals.forEach((g) => deleteGoalFromCloud(userRef.current!.uid, g.id));
-      sleepLogs.forEach((s) => deleteSleepLogFromCloud(userRef.current!.uid, s.id));
+      const uid = userRef.current.uid;
+      habits.forEach((h) => deleteHabitFromCloud(uid, h.id));
+      completions.forEach((c) => deleteCompletionFromCloud(uid, c.id));
+      todos.forEach((t) => deleteTodoFromCloud(uid, t.id));
+      goals.forEach((g) => deleteGoalFromCloud(uid, g.id));
+      sleepLogs.forEach((s) => deleteSleepLogFromCloud(uid, s.id));
+      sessionsToDelete.forEach((s) => deleteStudySessionFromCloud(uid, s.id));
+      syncActiveStudyTimerToCloud(uid, null).catch(() => {});
+      stopwatchToDelete.forEach((r) => deleteStopwatchRecordFromCloud(uid, r.id));
+      notesToDelete.forEach((n) => deleteStudyNoteFromCloud(uid, n.id));
     }
 
     showToast({
       type: 'warning',
       title: 'Data Cleared',
-      message: 'All habits, to-dos, goals, and sleep records have been cleared.',
+      message: 'All habits, to-dos, goals, sleep, and study records have been cleared.',
     });
   }, [habits, completions, todos, goals, sleepLogs, showToast]);
 
@@ -3498,27 +4327,41 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     (json: string) => {
       const success = Storage.importBackupJson(json);
       if (success) {
+        const uid = userRef.current?.uid || Storage.getCachedUserId() || undefined;
         const loadedHabits = Storage.getHabits();
         const loadedCompletions = Storage.getCompletions();
         const loadedTodos = Storage.getTodos();
         const loadedGoals = Storage.getGoals();
         const loadedSettings = Storage.getSettings();
+        const loadedStudySessions = Storage.getStudySessions(uid);
+        const loadedStopwatchRecords = Storage.getStopwatchRecords(uid);
+        const loadedStudyNotes = Storage.getStudyNotes(uid);
 
         setHabits(loadedHabits);
         setCompletions(loadedCompletions);
         setTodos(loadedTodos);
         setGoals(loadedGoals);
         setSettings(loadedSettings);
+        setStudySessions(loadedStudySessions);
+        studySessionsRef.current = loadedStudySessions;
+        setStopwatchRecords(loadedStopwatchRecords);
+        stopwatchRecordsRef.current = loadedStopwatchRecords;
+        setStudyNotes(loadedStudyNotes);
+        studyNotesRef.current = loadedStudyNotes;
 
         if (userRef.current) {
+          const activeUid = userRef.current.uid;
           uploadInitialDataToCloud(
-            userRef.current.uid,
+            activeUid,
             loadedHabits,
             loadedCompletions,
             loadedTodos,
             loadedSettings,
             loadedGoals
           );
+          loadedStudySessions.forEach((s) => syncStudySessionToCloud(activeUid, s));
+          loadedStopwatchRecords.forEach((r) => syncStopwatchRecordToCloud(activeUid, r));
+          loadedStudyNotes.forEach((n) => syncStudyNoteToCloud(activeUid, n));
         }
 
         showToast({
@@ -4323,6 +5166,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       syncReminderToCloud(uid, newRem);
     }
 
+    if (newRem.enabled) {
+      setTimeout(() => {
+        evaluateHeartbeatRef.current(true).catch(() => {});
+      }, 150);
+    }
+
     showToast({
       title: 'Reminder Created',
       message: `"${newRem.title}" scheduled for ${newRem.timeOfDay || newRem.targetTime}`,
@@ -4346,6 +5195,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     if (uid && target) {
       syncReminderToCloud(uid, { ...target, ...updates, updatedAt: nowIso });
     }
+
+    setTimeout(() => {
+      evaluateHeartbeatRef.current(true).catch(() => {});
+    }, 150);
   }, []);
 
   const deleteReminder = useCallback(async (id: string) => {
@@ -4480,7 +5333,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     return null;
   }, [savingsAnalytics, showToast]);
 
-  const evaluateNotificationHeartbeat = useCallback(async () => {
+  const evaluateNotificationHeartbeat = useCallback(async (force = false) => {
     if (!authResolvedRef.current) return;
     const currentUser = userRef.current;
     if (currentUser && (!cloudNotifsHydratedRef.current || !cloudDismissedHydratedRef.current)) {
@@ -4489,7 +5342,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     if (notifDeleteInFlightRef.current || isEvaluatingHeartbeatRef.current) return;
 
     const nowMs = Date.now();
-    if (nowMs - lastHeartbeatRunAtRef.current < 2500) {
+    if (!force && nowMs - lastHeartbeatRunAtRef.current < 2500) {
       return;
     }
 
@@ -4559,26 +5412,51 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         });
       }
 
-      if (currentSettings.soundEnabled && !isQuietHoursActive(currentSettings.quietHours)) {
+      const quietActive = isQuietHoursActive(currentSettings.quietHours);
+      if (currentSettings.soundEnabled && !quietActive) {
         playNotificationSound();
       }
 
+      // Prioritize specific time-bound alerts (habits, due tasks, custom reminders) for toast & push visibility
+      const priorityRank = (cat: string) =>
+        cat === 'habits' ? 0 : cat === 'tasks' ? 1 : cat === 'custom' ? 2 : 3;
+      const orderedAlerts = [...validReminders].sort(
+        (a, b) => priorityRank(a.category) - priorityRank(b.category)
+      );
+
+      if (typeof document !== 'undefined' && !document.hidden) {
+        const visibleToasts = orderedAlerts.slice(0, 3);
+        const overflowCount = orderedAlerts.length - visibleToasts.length;
+        visibleToasts.forEach((notif, idx) => {
+          const isLastWithOverflow = idx === visibleToasts.length - 1 && overflowCount > 0;
+          showToast({
+            type: 'info',
+            title: notif.title,
+            message: isLastWithOverflow
+              ? `${notif.message} (+${overflowCount} more reminder${overflowCount > 1 ? 's' : ''})`
+              : notif.message,
+          });
+        });
+      }
+
+      // Push native browser / Service Worker notifications regardless of tab visibility
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-        try {
-          const topNotif = validReminders[0];
-          if (document.hidden && topNotif) {
-            new Notification(topNotif.title, {
-              body: topNotif.message,
-              icon: '/icon-192.png',
-              tag: topNotif.idempotencyKey || topNotif.deduplicationKey,
-            });
-          }
-        } catch {}
+        const pushBatch = orderedAlerts.slice(0, 5);
+        pushBatch.forEach((notif) => {
+          pushBrowserNotification(notif).catch(() => {});
+        });
+      }
+
+      // Also dispatch Web Push to subscribed devices/service workers when enabled
+      if (uid && currentSettings.pushEnabled && !quietActive) {
+        orderedAlerts.slice(0, 5).forEach((notif) => {
+          triggerWebPushNotification(uid, notif).catch(() => {});
+        });
       }
     } finally {
       isEvaluatingHeartbeatRef.current = false;
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     evaluateHeartbeatRef.current = evaluateNotificationHeartbeat;
@@ -4586,26 +5464,618 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const initialTimer = setTimeout(() => {
-      evaluateNotificationHeartbeat();
+      evaluateNotificationHeartbeat(false);
     }, 3000);
 
     const interval = setInterval(() => {
-      evaluateNotificationHeartbeat();
-    }, 60000);
+      evaluateNotificationHeartbeat(false);
+    }, 30000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        evaluateNotificationHeartbeat();
+        evaluateNotificationHeartbeat(true);
       }
     };
+    const handleFocus = () => {
+      evaluateNotificationHeartbeat(false);
+    };
     document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       clearTimeout(initialTimer);
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleFocus);
     };
   }, [evaluateNotificationHeartbeat]);
+
+  // Precision exact-time scheduler: arms a timer for the exact minute the next habit/task/custom reminder is due
+  useEffect(() => {
+    if (authLoading) return;
+
+    const armTimer = (): ReturnType<typeof setTimeout> | null => {
+      const delayMs = getNextUpcomingReminderDelayMs({
+        settings: notificationSettings,
+        habits,
+        habitCompletions: completions,
+        todos,
+        customReminders,
+      });
+
+      if (delayMs === null) return null;
+
+      // Cap timer to max safe 32-bit timeout (~24.8 days)
+      const safeDelay = Math.min(delayMs, 2147483000);
+      return setTimeout(() => {
+        evaluateHeartbeatRef.current(true).catch(() => {});
+      }, safeDelay);
+    };
+
+    const exactTimer = armTimer();
+    return () => {
+      if (exactTimer) clearTimeout(exactTimer);
+    };
+  }, [authLoading, habits, completions, todos, customReminders, notificationSettings, currentTimestamp]);
+
+  // Automatic rolling materialization of recurring to-dos for future dates & date navigation
+  useEffect(() => {
+    if (authLoading || todos.length === 0) return;
+
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    const deletedIds = new Set<string>([
+      ...Storage.getDeletedIds(),
+      ...deletionsRef.current.keys(),
+    ]);
+    const skippedOccurrences = Storage.getSkippedTodoOccurrences(uid);
+
+    const missing = findMissingRecurringTodoInstances(todos, {
+      todayKey,
+      selectedDate,
+      deletedIds,
+      skippedOccurrences,
+    });
+
+    if (missing.length > 0) {
+      missing.forEach((m) => Storage.unmarkDeleted(m.id));
+      const updated = [...todosRef.current, ...missing];
+      persistTodos(updated);
+      syncToCloudNow((activeUid) => syncTodosBatchToCloud(activeUid, missing));
+    }
+  }, [authLoading, todos, todayKey, selectedDate, persistTodos, syncToCloudNow]);
+
+  // -------------------------------------------------------------
+  // STUDY SYSTEM: STUDY TIMER, STOPWATCH, NOTES & ANALYTICS
+  // -------------------------------------------------------------
+  const persistStudySessions = useCallback((next: StudySession[]) => {
+    studySessionsRef.current = next;
+    setStudySessions(next);
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    Storage.saveStudySessions(next, uid);
+  }, []);
+
+  const persistActiveStudyTimer = useCallback((next: ActiveStudyTimerState | null) => {
+    activeStudyTimerRef.current = next;
+    setActiveStudyTimer(next);
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    Storage.saveActiveStudyTimer(next, uid);
+  }, []);
+
+  const persistStopwatchRecords = useCallback((next: StopwatchRecord[]) => {
+    stopwatchRecordsRef.current = next;
+    setStopwatchRecords(next);
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    Storage.saveStopwatchRecords(next, uid);
+  }, []);
+
+  const persistActiveStopwatch = useCallback((next: ActiveStopwatchState | null) => {
+    activeStopwatchRef.current = next;
+    setActiveStopwatch(next);
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    Storage.saveActiveStopwatch(next, uid);
+  }, []);
+
+  const persistStudyNotes = useCallback((next: StudyNote[]) => {
+    studyNotesRef.current = next;
+    setStudyNotes(next);
+    const uid = auth.currentUser?.uid || userRef.current?.uid || Storage.getCachedUserId() || undefined;
+    Storage.saveStudyNotes(next, uid);
+  }, []);
+
+  const startStudyTimer = useCallback(
+    (taskId?: string | null, customLabel?: string, notes?: string) => {
+      if (activeStudyTimerRef.current) {
+        return {
+          success: false,
+          error: 'An active study timer is already running or paused. Finish or cancel it first.',
+        };
+      }
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || undefined;
+      const linkedTask = taskId ? todosRef.current.find((t) => t.id === taskId) : undefined;
+      const snapshotTitle =
+        linkedTask?.title || (customLabel && customLabel.trim()) || 'Unlinked Study Session';
+
+      const timerState: ActiveStudyTimerState = {
+        sessionId: `study_${nowMs}_${Math.random().toString(36).substring(2, 7)}`,
+        userId: uid,
+        taskId: linkedTask ? linkedTask.id : null,
+        taskNameSnapshot: snapshotTitle,
+        isUnlinked: !linkedTask,
+        startTimestamp: nowMs,
+        segmentStartTimestamp: nowMs,
+        accumulatedActiveMs: 0,
+        totalPausedMs: 0,
+        pauseCount: 0,
+        pauseIntervals: [],
+        status: 'running',
+        notes: notes?.trim() || '',
+        updatedAt: nowIso,
+      };
+
+      persistActiveStudyTimer(timerState);
+      syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, timerState));
+
+      showToast({
+        type: 'success',
+        title: 'Study Timer Started',
+        message: `Tracking "${snapshotTitle}".`,
+      });
+      return { success: true };
+    },
+    [persistActiveStudyTimer, syncToCloudNow, showToast]
+  );
+
+  const pauseStudyTimer = useCallback(() => {
+    const current = activeStudyTimerRef.current;
+    if (!current || current.status !== 'running') return;
+    const nowMs = Date.now();
+    const accumulated = computeActiveStudyElapsedMs(current, nowMs);
+    const updated: ActiveStudyTimerState = {
+      ...current,
+      accumulatedActiveMs: accumulated,
+      segmentStartTimestamp: undefined,
+      pausedAtTimestamp: nowMs,
+      pauseCount: current.pauseCount + 1,
+      status: 'paused',
+      updatedAt: new Date(nowMs).toISOString(),
+    };
+    persistActiveStudyTimer(updated);
+    syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, updated));
+  }, [persistActiveStudyTimer, syncToCloudNow]);
+
+  const resumeStudyTimer = useCallback(() => {
+    const current = activeStudyTimerRef.current;
+    if (!current || current.status !== 'paused') return;
+    const nowMs = Date.now();
+    const extraPaused =
+      typeof current.pausedAtTimestamp === 'number'
+        ? Math.max(0, nowMs - current.pausedAtTimestamp)
+        : 0;
+    const updated: ActiveStudyTimerState = {
+      ...current,
+      segmentStartTimestamp: nowMs,
+      pausedAtTimestamp: undefined,
+      totalPausedMs: current.totalPausedMs + extraPaused,
+      status: 'running',
+      updatedAt: new Date(nowMs).toISOString(),
+    };
+    persistActiveStudyTimer(updated);
+    syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, updated));
+  }, [persistActiveStudyTimer, syncToCloudNow]);
+
+  const updateActiveStudyTimerNotes = useCallback(
+    (notes: string) => {
+      const current = activeStudyTimerRef.current;
+      if (!current) return;
+      const updated: ActiveStudyTimerState = {
+        ...current,
+        notes,
+        updatedAt: new Date().toISOString(),
+      };
+      persistActiveStudyTimer(updated);
+      syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, updated));
+    },
+    [persistActiveStudyTimer, syncToCloudNow]
+  );
+
+  const finishStudyTimer = useCallback(
+    (overrideNotes?: string): StudySession | null => {
+      const current = activeStudyTimerRef.current;
+      if (!current) return null;
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || current.userId;
+
+      const actualDurationMs = Math.max(1000, computeActiveStudyElapsedMs(current, nowMs));
+      const extraPaused =
+        current.status === 'paused' && typeof current.pausedAtTimestamp === 'number'
+          ? Math.max(0, nowMs - current.pausedAtTimestamp)
+          : 0;
+
+      const session: StudySession = {
+        id: current.sessionId,
+        userId: uid,
+        taskId: current.taskId ?? null,
+        taskNameSnapshot: current.taskNameSnapshot,
+        isUnlinked: current.isUnlinked ?? !current.taskId,
+        dateKey: getTodayKey(),
+        startTimestamp: current.startTimestamp,
+        endTimestamp: nowMs,
+        actualDurationMs,
+        actualDurationMinutes: Math.round((actualDurationMs / 60000) * 100) / 100,
+        pauseCount: current.pauseCount,
+        totalPausedMs: current.totalPausedMs + extraPaused,
+        pauseIntervals: current.pauseIntervals || [],
+        notes: (overrideNotes !== undefined ? overrideNotes : current.notes)?.trim() || undefined,
+        status: 'completed',
+        source: 'timer',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      Storage.unmarkDeleted(session.id);
+      const nextSessions = [session, ...studySessionsRef.current].sort(
+        (a, b) => b.startTimestamp - a.startTimestamp
+      );
+      persistStudySessions(nextSessions);
+      persistActiveStudyTimer(null);
+
+      syncToCloudNow(async (activeUid) => {
+        await syncStudySessionToCloud(activeUid, session);
+        await syncActiveStudyTimerToCloud(activeUid, null);
+      });
+
+      const mins = Math.max(1, Math.round(actualDurationMs / 60000));
+      showToast({
+        type: 'success',
+        title: 'Study Session Saved',
+        message: `Logged ${mins}m for "${session.taskNameSnapshot}". Linked tasks remain open until you check them off.`,
+      });
+      return session;
+    },
+    [persistStudySessions, persistActiveStudyTimer, syncToCloudNow, showToast]
+  );
+
+  const cancelStudyTimer = useCallback(() => {
+    const current = activeStudyTimerRef.current;
+    if (!current) return;
+    persistActiveStudyTimer(null);
+    syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, null));
+    showToast({
+      type: 'info',
+      title: 'Study Session Cancelled',
+      message: 'Active study timer discarded without logging to analytics.',
+    });
+  }, [persistActiveStudyTimer, syncToCloudNow, showToast]);
+
+  const deleteStudySession = useCallback(
+    (id: string) => {
+      const nowIso = new Date().toISOString();
+      Storage.unmarkSynced(id);
+      Storage.markDeleted(id);
+      deletionsRef.current.set(id, nowIso);
+      const next = studySessionsRef.current.filter((s) => s.id !== id);
+      persistStudySessions(next);
+      syncToCloudNow((activeUid) => deleteStudySessionFromCloud(activeUid, id));
+      showToast({
+        type: 'info',
+        title: 'Study Session Deleted',
+        message: 'Study session removed from history and analytics.',
+      });
+    },
+    [persistStudySessions, syncToCloudNow, showToast]
+  );
+
+  const startStopwatch = useCallback(
+    (title?: string) => {
+      const nowMs = Date.now();
+      const sw: ActiveStopwatchState = {
+        stopwatchId: `sw_${nowMs}_${Math.random().toString(36).substring(2, 6)}`,
+        title: title?.trim() || undefined,
+        startTimestamp: nowMs,
+        segmentStartTimestamp: nowMs,
+        accumulatedMs: 0,
+        status: 'running',
+        laps: [],
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      persistActiveStopwatch(sw);
+    },
+    [persistActiveStopwatch]
+  );
+
+  const pauseStopwatch = useCallback(() => {
+    const current = activeStopwatchRef.current;
+    if (!current || current.status !== 'running') return;
+    const nowMs = Date.now();
+    const updated: ActiveStopwatchState = {
+      ...current,
+      accumulatedMs: computeActiveStopwatchElapsedMs(current, nowMs),
+      segmentStartTimestamp: undefined,
+      status: 'paused',
+      updatedAt: new Date(nowMs).toISOString(),
+    };
+    persistActiveStopwatch(updated);
+  }, [persistActiveStopwatch]);
+
+  const resumeStopwatch = useCallback(() => {
+    const current = activeStopwatchRef.current;
+    if (!current || current.status !== 'paused') return;
+    const nowMs = Date.now();
+    const updated: ActiveStopwatchState = {
+      ...current,
+      segmentStartTimestamp: nowMs,
+      status: 'running',
+      updatedAt: new Date(nowMs).toISOString(),
+    };
+    persistActiveStopwatch(updated);
+  }, [persistActiveStopwatch]);
+
+  const lapStopwatch = useCallback(
+    (label?: string) => {
+      const current = activeStopwatchRef.current;
+      if (!current) return;
+      const nowMs = Date.now();
+      const cumulativeMs = computeActiveStopwatchElapsedMs(current, nowMs);
+      const prevLapCumulative =
+        current.laps.length > 0 ? current.laps[current.laps.length - 1].cumulativeMs : 0;
+      const splitMs = Math.max(0, cumulativeMs - prevLapCumulative);
+      const newLap: StopwatchLap = {
+        lapNumber: current.laps.length + 1,
+        splitMs,
+        cumulativeMs,
+        recordedAt: new Date(nowMs).toISOString(),
+        label: label?.trim() || undefined,
+      };
+      const updated: ActiveStopwatchState = {
+        ...current,
+        laps: [...current.laps, newLap],
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      persistActiveStopwatch(updated);
+    },
+    [persistActiveStopwatch]
+  );
+
+  const resetStopwatch = useCallback(() => {
+    persistActiveStopwatch(null);
+  }, [persistActiveStopwatch]);
+
+  const stopAndSaveStopwatch = useCallback(
+    (title?: string, notes?: string): StopwatchRecord | null => {
+      const current = activeStopwatchRef.current;
+      if (!current) return null;
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || undefined;
+      const elapsedMs = computeActiveStopwatchElapsedMs(current, nowMs);
+
+      const record: StopwatchRecord = {
+        id: current.stopwatchId,
+        userId: uid,
+        title: (title !== undefined ? title : current.title)?.trim() || undefined,
+        notes: notes?.trim() || undefined,
+        dateKey: getTodayKey(),
+        startTimestamp: current.startTimestamp,
+        endTimestamp: nowMs,
+        elapsedMs,
+        laps: current.laps,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      Storage.unmarkDeleted(record.id);
+      const next = [record, ...stopwatchRecordsRef.current].sort(
+        (a, b) => b.startTimestamp - a.startTimestamp
+      );
+      persistStopwatchRecords(next);
+      persistActiveStopwatch(null);
+      syncToCloudNow((activeUid) => syncStopwatchRecordToCloud(activeUid, record));
+
+      showToast({
+        type: 'success',
+        title: 'Stopwatch Saved',
+        message: 'Saved to Stopwatch history (excluded from Study Analytics unless converted).',
+      });
+      return record;
+    },
+    [persistStopwatchRecords, persistActiveStopwatch, syncToCloudNow, showToast]
+  );
+
+  const deleteStopwatchRecord = useCallback(
+    (id: string) => {
+      const nowIso = new Date().toISOString();
+      Storage.unmarkSynced(id);
+      Storage.markDeleted(id);
+      deletionsRef.current.set(id, nowIso);
+      const next = stopwatchRecordsRef.current.filter((r) => r.id !== id);
+      persistStopwatchRecords(next);
+      syncToCloudNow((activeUid) => deleteStopwatchRecordFromCloud(activeUid, id));
+      showToast({
+        type: 'info',
+        title: 'Stopwatch Record Deleted',
+        message: 'Stopwatch entry removed.',
+      });
+    },
+    [persistStopwatchRecords, syncToCloudNow, showToast]
+  );
+
+  const convertStopwatchToStudySession = useCallback(
+    (
+      recordId: string,
+      taskId?: string | null
+    ): { success: boolean; session?: StudySession; error?: string } => {
+      const record = stopwatchRecordsRef.current.find((r) => r.id === recordId);
+      if (!record) return { success: false, error: 'Stopwatch record not found.' };
+      if (record.convertedToStudySessionId) {
+        return {
+          success: false,
+          error: 'This stopwatch run has already been converted to a Study Session.',
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || record.userId;
+      const linkedTask = taskId ? todosRef.current.find((t) => t.id === taskId) : undefined;
+      const taskNameSnapshot =
+        linkedTask?.title || record.title || 'Stopwatch Study Session';
+      const actualDurationMs = Math.max(1000, record.elapsedMs);
+
+      const session: StudySession = {
+        id: `study_conv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        userId: uid,
+        taskId: linkedTask ? linkedTask.id : null,
+        taskNameSnapshot,
+        isUnlinked: !linkedTask,
+        dateKey: record.dateKey || getTodayKey(),
+        startTimestamp: record.startTimestamp,
+        endTimestamp: record.endTimestamp,
+        actualDurationMs,
+        actualDurationMinutes: Math.round((actualDurationMs / 60000) * 100) / 100,
+        pauseCount: 0,
+        totalPausedMs: 0,
+        notes: record.notes,
+        status: 'completed',
+        source: 'stopwatch_converted',
+        stopwatchRecordId: record.id,
+        convertedFromStopwatchId: record.id,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      const updatedRecord: StopwatchRecord = {
+        ...record,
+        convertedToStudySessionId: session.id,
+        updatedAt: nowIso,
+      };
+
+      Storage.unmarkDeleted(session.id);
+      const nextSessions = [session, ...studySessionsRef.current].sort(
+        (a, b) => b.startTimestamp - a.startTimestamp
+      );
+      const nextRecords = stopwatchRecordsRef.current.map((r) =>
+        r.id === record.id ? updatedRecord : r
+      );
+
+      persistStudySessions(nextSessions);
+      persistStopwatchRecords(nextRecords);
+      syncToCloudNow(async (activeUid) => {
+        await syncStudySessionToCloud(activeUid, session);
+        await syncStopwatchRecordToCloud(activeUid, updatedRecord);
+      });
+
+      showToast({
+        type: 'success',
+        title: 'Converted to Study Session',
+        message: `"${taskNameSnapshot}" now counts toward Study Analytics.`,
+      });
+      return { success: true, session };
+    },
+    [persistStudySessions, persistStopwatchRecords, syncToCloudNow, showToast]
+  );
+
+  const createStudyNote = useCallback(
+    (input: Omit<StudyNote, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): StudyNote => {
+      const nowIso = new Date().toISOString();
+      const uid = auth.currentUser?.uid || userRef.current?.uid || undefined;
+      const id =
+        input.id || `note_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+      const newNote: StudyNote = {
+        ...input,
+        id,
+        userId: uid,
+        title: input.title.trim() || 'Untitled Study Note',
+        subject: input.subject.trim() || 'General Study',
+        contentMarkdown: input.contentMarkdown || '',
+        tags: Array.isArray(input.tags) ? input.tags : [],
+        isPinned: Boolean(input.isPinned),
+        isFavorite: Boolean(input.isFavorite),
+        attachments: Array.isArray(input.attachments) ? input.attachments : [],
+        videoLinks: Array.isArray(input.videoLinks) ? input.videoLinks : [],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      Storage.unmarkDeleted(newNote.id);
+      const next = [newNote, ...studyNotesRef.current];
+      persistStudyNotes(next);
+      syncToCloudNow((activeUid) => syncStudyNoteToCloud(activeUid, newNote));
+
+      showToast({
+        type: 'success',
+        title: 'Study Note Saved',
+        message: `"${newNote.title}" saved under ${newNote.subject}.`,
+      });
+      return newNote;
+    },
+    [persistStudyNotes, syncToCloudNow, showToast]
+  );
+
+  const updateStudyNote = useCallback(
+    (
+      id: string,
+      updates: Partial<Omit<StudyNote, 'id' | 'createdAt'>>
+    ): StudyNote | null => {
+      const existing = studyNotesRef.current.find((n) => n.id === id);
+      if (!existing) return null;
+      const nowIso = new Date().toISOString();
+      const updatedNote: StudyNote = {
+        ...existing,
+        ...updates,
+        id,
+        title: updates.title !== undefined ? updates.title.trim() || 'Untitled Study Note' : existing.title,
+        subject: updates.subject !== undefined ? updates.subject.trim() || 'General Study' : existing.subject,
+        updatedAt: nowIso,
+      };
+      const next = studyNotesRef.current.map((n) => (n.id === id ? updatedNote : n));
+      persistStudyNotes(next);
+      syncToCloudNow((activeUid) => syncStudyNoteToCloud(activeUid, updatedNote));
+      return updatedNote;
+    },
+    [persistStudyNotes, syncToCloudNow]
+  );
+
+  const deleteStudyNote = useCallback(
+    async (id: string) => {
+      const existing = studyNotesRef.current.find((n) => n.id === id);
+      if (existing && existing.attachments.length > 0) {
+        await Promise.allSettled(
+          existing.attachments.map((att) => deleteStudyAttachmentFile(att.storagePath))
+        );
+      }
+      const nowIso = new Date().toISOString();
+      Storage.unmarkSynced(id);
+      Storage.markDeleted(id);
+      deletionsRef.current.set(id, nowIso);
+      const next = studyNotesRef.current.filter((n) => n.id !== id);
+      persistStudyNotes(next);
+      syncToCloudNow((activeUid) => deleteStudyNoteFromCloud(activeUid, id));
+      showToast({
+        type: 'info',
+        title: 'Study Note Deleted',
+        message: existing ? `"${existing.title}" and attachments deleted.` : 'Note deleted.',
+      });
+    },
+    [persistStudyNotes, syncToCloudNow, showToast]
+  );
+
+  const studyDashboardSummary = useMemo(() => {
+    return calculateStudyDashboardSummary(todayKey, todos, studySessions);
+  }, [todayKey, todos, studySessions]);
+
+  const getStudyAnalytics = useCallback(
+    (range: StudyAnalyticsRange, customStartDate?: string, customEndDate?: string) => {
+      const customRange =
+        customStartDate && customEndDate
+          ? { startDate: customStartDate, endDate: customEndDate }
+          : undefined;
+      return calculateStudyAnalytics(range, customRange, todos, studySessions, todayKey);
+    },
+    [todos, studySessions, todayKey]
+  );
 
   const value: LifeOSContextType = {
     user,
@@ -4729,6 +6199,33 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
     updateNotificationSettings,
     generateAIDailyBriefing,
     evaluateNotificationHeartbeat,
+
+    // Study System State & Operations
+    studySessions,
+    activeStudyTimer,
+    stopwatchRecords,
+    activeStopwatch,
+    studyNotes,
+    studyDashboardSummary,
+    getStudyAnalytics,
+    startStudyTimer,
+    pauseStudyTimer,
+    resumeStudyTimer,
+    updateActiveStudyTimerNotes,
+    finishStudyTimer,
+    cancelStudyTimer,
+    deleteStudySession,
+    startStopwatch,
+    pauseStopwatch,
+    resumeStopwatch,
+    lapStopwatch,
+    resetStopwatch,
+    stopAndSaveStopwatch,
+    deleteStopwatchRecord,
+    convertStopwatchToStudySession,
+    createStudyNote,
+    updateStudyNote,
+    deleteStudyNote,
   };
 
   return <LifeOSContext.Provider value={value}>{children}</LifeOSContext.Provider>;

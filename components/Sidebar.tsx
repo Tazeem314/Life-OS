@@ -1,10 +1,11 @@
 'use client';
 
-import React from 'react';
-import { motion } from 'motion/react';
+import React, { useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
 import { useLifeOS } from '@/context/LifeOSContext';
 import { ActiveTab } from '@/lib/types';
+import { computeActiveStudyElapsedMs, formatHMS } from '@/lib/study-service';
 import {
   LayoutDashboard,
   Sparkles,
@@ -17,6 +18,12 @@ import {
   Cloud,
   PiggyBank,
   Bell,
+  GraduationCap,
+  ChevronDown,
+  Timer,
+  Gauge,
+  BarChart3,
+  FileText,
 } from 'lucide-react';
 
 interface NavItem {
@@ -25,6 +32,17 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   badge?: string | number;
 }
+
+const STUDY_SUB_ITEMS: {
+  id: Extract<ActiveTab, 'study_timer' | 'stopwatch' | 'study_analytics' | 'study_notes'>;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: 'study_timer', label: 'Study Timer', icon: Timer },
+  { id: 'stopwatch', label: 'Stopwatch', icon: Gauge },
+  { id: 'study_analytics', label: 'Study Analytics', icon: BarChart3 },
+  { id: 'study_notes', label: 'Study Notes', icon: FileText },
+];
 
 export function Sidebar() {
   const {
@@ -36,12 +54,39 @@ export function Sidebar() {
     savingsGoals,
     sleepAnalytics,
     unreadNotificationsCount,
+    activeStudyTimer,
+    studyNotes,
     user,
     loginWithGoogle,
     isOnline,
   } = useLifeOS();
 
-  const navItems: NavItem[] = [
+  const isStudyTabActive =
+    activeTab === 'study_timer' ||
+    activeTab === 'stopwatch' ||
+    activeTab === 'study_analytics' ||
+    activeTab === 'study_notes';
+
+  const [studyOpenOverride, setStudyOpenOverride] = useState<boolean | null>(null);
+  const isStudyOpen = studyOpenOverride ?? isStudyTabActive;
+  const [tickNow, setTickNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!activeStudyTimer || activeStudyTimer.status !== 'running') return;
+    const id = window.setInterval(() => setTickNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [activeStudyTimer]);
+
+  const activeTimerElapsed = activeStudyTimer
+    ? formatHMS(
+        computeActiveStudyElapsedMs(
+          activeStudyTimer,
+          activeStudyTimer.status === 'running' ? tickNow : activeStudyTimer.pausedAtTimestamp || tickNow
+        )
+      )
+    : null;
+
+  const navItemsTop: NavItem[] = [
     {
       id: 'dashboard',
       label: 'Dashboard',
@@ -62,6 +107,9 @@ export function Sidebar() {
           ? `${todayProgress.completedTodos}/${todayProgress.totalTodos}`
           : undefined,
     },
+  ];
+
+  const navItemsBottom: NavItem[] = [
     {
       id: 'goals',
       label: 'Goals',
@@ -103,40 +151,140 @@ export function Sidebar() {
     },
   ];
 
+  const renderNavItem = (item: NavItem) => {
+    const Icon = item.icon;
+    const isActive = activeTab === item.id;
+    return (
+      <button
+        key={item.id}
+        onClick={() => setActiveTab(item.id)}
+        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+          isActive
+            ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-800/60 shadow-2xs font-semibold'
+            : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100'
+        }`}
+      >
+        <div className="flex items-center gap-2.5">
+          <Icon className={`w-4 h-4 ${isActive ? 'text-sky-600 dark:text-sky-400' : 'text-zinc-400 dark:text-zinc-500'}`} />
+          <span>{item.label}</span>
+        </div>
+        {item.badge !== undefined && (
+          <span
+            className={`text-[11px] font-mono tabular-nums font-medium ${
+              isActive
+                ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                : 'text-zinc-400 dark:text-zinc-500'
+            }`}
+          >
+            {item.badge}
+          </span>
+        )}
+      </button>
+    );
+  };
+
   return (
     <aside className="hidden md:flex flex-col w-64 shrink-0 border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/40 dark:bg-zinc-950/40 p-3 sticky top-[57px] self-start h-[calc(100vh-57px)] overflow-y-auto no-scrollbar z-30">
       <nav className="space-y-1 flex-1">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-                isActive
-                  ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-800/60 shadow-2xs font-semibold'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Icon className={`w-4 h-4 ${isActive ? 'text-sky-600 dark:text-sky-400' : 'text-zinc-400 dark:text-zinc-500'}`} />
-                <span>{item.label}</span>
-              </div>
-              {item.badge !== undefined && (
+        {navItemsTop.map(renderNavItem)}
+
+        {/* Expandable Study System Menu */}
+        <div className="pt-0.5 pb-0.5">
+          <button
+            type="button"
+            onClick={() => setStudyOpenOverride(!isStudyOpen)}
+            aria-expanded={isStudyOpen}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+              isStudyTabActive
+                ? 'bg-sky-50/80 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 font-semibold'
+                : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <GraduationCap
+                className={`w-4 h-4 ${
+                  isStudyTabActive ? 'text-sky-600 dark:text-sky-400' : 'text-zinc-400 dark:text-zinc-500'
+                }`}
+              />
+              <span>Study</span>
+              {activeStudyTimer && (
                 <span
-                  className={`text-[11px] font-mono tabular-nums font-medium ${
-                    isActive
-                      ? 'text-sky-700 dark:text-sky-300 font-semibold'
-                      : 'text-zinc-400 dark:text-zinc-500'
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    activeStudyTimer.status === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
                   }`}
-                >
-                  {item.badge}
-                </span>
+                  title="Active study timer"
+                />
               )}
-            </button>
-          );
-        })}
+            </div>
+            <ChevronDown
+              className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${
+                isStudyOpen ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          <AnimatePresence initial={false}>
+            {isStudyOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.16 }}
+                className="overflow-hidden pl-3.5 mt-0.5 space-y-0.5 border-l border-zinc-200/80 dark:border-zinc-800/80 ml-4"
+              >
+                {STUDY_SUB_ITEMS.map((sub) => {
+                  const SubIcon = sub.icon;
+                  const isSubActive = activeTab === sub.id;
+                  const badge =
+                    sub.id === 'study_timer' && activeTimerElapsed
+                      ? activeTimerElapsed
+                      : sub.id === 'study_notes' && studyNotes.length > 0
+                        ? studyNotes.length
+                        : undefined;
+
+                  return (
+                    <button
+                      key={sub.id}
+                      onClick={() => {
+                        setStudyOpenOverride(true);
+                        setActiveTab(sub.id);
+                      }}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                        isSubActive
+                          ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-800/60 shadow-2xs font-semibold'
+                          : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SubIcon
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            isSubActive ? 'text-sky-600 dark:text-sky-400' : 'text-zinc-400 dark:text-zinc-500'
+                          }`}
+                        />
+                        <span className="truncate">{sub.label}</span>
+                      </div>
+                      {badge !== undefined && (
+                        <span
+                          className={`text-[10px] font-mono tabular-nums font-medium shrink-0 ${
+                            sub.id === 'study_timer' && activeStudyTimer?.status === 'running'
+                              ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                              : isSubActive
+                                ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                                : 'text-zinc-400 dark:text-zinc-500'
+                          }`}
+                        >
+                          {badge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {navItemsBottom.map(renderNavItem)}
       </nav>
 
       {/* Mini daily completion widget at bottom of sidebar */}

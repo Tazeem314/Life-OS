@@ -15,6 +15,10 @@ import { SettingsView } from '@/components/SettingsView';
 import { SleepView } from '@/components/sleep/SleepView';
 import { SavingsView } from '@/components/savings/SavingsView';
 import { NotificationCenterView } from '@/components/notifications/NotificationCenterView';
+import { StudyTimerView } from '@/components/study/StudyTimerView';
+import { StopwatchView } from '@/components/study/StopwatchView';
+import { StudyAnalyticsView } from '@/components/study/StudyAnalyticsView';
+import { StudyNotesView } from '@/components/study/StudyNotesView';
 import { HabitModal } from '@/components/modals/HabitModal';
 import { TodoModal } from '@/components/modals/TodoModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
@@ -77,6 +81,11 @@ function LifeOSAppContent() {
     message: string;
     confirmText: string;
     isDestructive: boolean;
+    secondaryAction?: {
+      label: string;
+      onClick: () => void;
+      variant?: 'default' | 'destructive';
+    };
     onConfirm: () => void;
   }>({
     isOpen: false,
@@ -125,14 +134,27 @@ function LifeOSAppContent() {
   };
 
   const handleDeleteTodoPrompt = (todo: Todo) => {
+    const isRecurring = Boolean(todo.recurrence && todo.recurrence !== 'none' && todo.recurrenceSeriesId);
     setConfirmDialog({
       isOpen: true,
-      title: 'Delete To-Do?',
-      message: `Are you sure you want to remove "${todo.title}"?`,
-      confirmText: 'Delete Task',
+      title: isRecurring ? 'Delete Recurring To-Do?' : 'Delete To-Do?',
+      message: isRecurring
+        ? `"${todo.title}" is part of a recurring schedule. Remove only this occurrence or the entire recurring series?`
+        : `Are you sure you want to remove "${todo.title}"?`,
+      confirmText: isRecurring ? 'Delete This Occurrence' : 'Delete Task',
       isDestructive: true,
+      secondaryAction: isRecurring
+        ? {
+            label: 'Delete Entire Recurring Series',
+            variant: 'destructive',
+            onClick: () => {
+              deleteTodo(todo.id, 'series');
+              setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+            },
+          }
+        : undefined,
       onConfirm: () => {
-        deleteTodo(todo.id);
+        deleteTodo(todo.id, 'single');
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
       },
     });
@@ -383,6 +405,54 @@ function LifeOSAppContent() {
                 <NotificationCenterView />
               </motion.div>
             )}
+
+            {activeTab === 'study_timer' && (
+              <motion.div
+                key="study_timer"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <StudyTimerView />
+              </motion.div>
+            )}
+
+            {activeTab === 'stopwatch' && (
+              <motion.div
+                key="stopwatch"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <StopwatchView />
+              </motion.div>
+            )}
+
+            {activeTab === 'study_analytics' && (
+              <motion.div
+                key="study_analytics"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <StudyAnalyticsView />
+              </motion.div>
+            )}
+
+            {activeTab === 'study_notes' && (
+              <motion.div
+                key="study_notes"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <StudyNotesView />
+              </motion.div>
+            )}
           </AnimatePresence>
         </main>
       </div>
@@ -416,9 +486,9 @@ function LifeOSAppContent() {
         todoToEdit={todoToEdit}
         defaultDate={defaultTodoDate}
         onClose={() => setIsTodoModalOpen(false)}
-        onSave={(data) => {
+        onSave={(data, editScope) => {
           if (todoToEdit) {
-            return updateTodo(todoToEdit.id, data);
+            return updateTodo(todoToEdit.id, data, editScope);
           } else {
             return createTodo(data);
           }
@@ -486,6 +556,7 @@ function LifeOSAppContent() {
         message={confirmDialog.message}
         confirmText={confirmDialog.confirmText}
         isDestructive={confirmDialog.isDestructive}
+        secondaryAction={confirmDialog.secondaryAction}
         onConfirm={confirmDialog.onConfirm}
         onCancel={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
       />

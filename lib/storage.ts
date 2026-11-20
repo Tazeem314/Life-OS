@@ -1,5 +1,6 @@
 import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, ActiveSleepSession, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
 import { NotificationRecord, ReminderDefinition, NotificationSettings, AIDailyBriefing } from './notification-types';
+import { StudySession, ActiveStudyTimerState, StopwatchRecord, ActiveStopwatchState, StudyNote } from './study-types';
 import { getInitialSeedSleepLogs, DEFAULT_SLEEP_SETTINGS } from './sleep-service';
 import { DEFAULT_SAVINGS_SETTINGS } from './savings-service';
 
@@ -13,6 +14,11 @@ const ACTIVE_SLEEP_SESSION_KEY = 'life_os_active_sleep_session_v1';
 const SAVINGS_GOALS_STORAGE_KEY = 'life_os_savings_goals_v1';
 const SAVINGS_TRANSACTIONS_STORAGE_KEY = 'life_os_savings_transactions_v1';
 const SAVINGS_SETTINGS_STORAGE_KEY = 'life_os_savings_settings_v1';
+const STUDY_SESSIONS_STORAGE_KEY = 'life_os_study_sessions_v1';
+const ACTIVE_STUDY_TIMER_KEY = 'life_os_active_study_timer_v1';
+const STOPWATCH_RECORDS_STORAGE_KEY = 'life_os_stopwatch_records_v1';
+const ACTIVE_STOPWATCH_KEY = 'life_os_active_stopwatch_v1';
+const STUDY_NOTES_STORAGE_KEY = 'life_os_study_notes_v1';
 const INITIALIZED_KEY = 'life_os_initialized_v2';
 const CACHED_USER_KEY = 'life_os_cached_uid';
 const DELETED_IDS_KEY = 'lifeos_deleted_ids_v1';
@@ -331,6 +337,7 @@ export const Storage = {
 
   clearAllData(): void {
     if (typeof window === 'undefined') return;
+    const uid = this.getCachedUserId();
     localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(COMPLETIONS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(TODOS_STORAGE_KEY, JSON.stringify([]));
@@ -341,6 +348,11 @@ export const Storage = {
     localStorage.setItem(SAVINGS_TRANSACTIONS_STORAGE_KEY, JSON.stringify([]));
     localStorage.setItem(SAVINGS_SETTINGS_STORAGE_KEY, JSON.stringify(DEFAULT_SAVINGS_SETTINGS));
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(INITIAL_SETTINGS));
+    this.saveStudySessions([], uid || undefined);
+    this.saveActiveStudyTimer(null, uid || undefined);
+    this.saveStopwatchRecords([], uid || undefined);
+    this.saveActiveStopwatch(null, uid || undefined);
+    this.saveStudyNotes([], uid || undefined);
     localStorage.setItem(INITIALIZED_KEY, 'true');
   },
 
@@ -366,9 +378,10 @@ export const Storage = {
   },
 
   exportBackupJson(): string {
+    const uid = this.getCachedUserId() || undefined;
     return JSON.stringify(
       {
-        version: '2.2',
+        version: '2.3',
         exportedAt: new Date().toISOString(),
         habits: this.getHabits(),
         completions: this.getCompletions(),
@@ -378,6 +391,9 @@ export const Storage = {
         savingsGoals: this.getSavingsGoals(),
         savingsTransactions: this.getSavingsTransactions(),
         savingsSettings: this.getSavingsSettings(),
+        studySessions: this.getStudySessions(uid),
+        stopwatchRecords: this.getStopwatchRecords(uid),
+        studyNotes: this.getStudyNotes(uid),
         settings: this.getSettings(),
       },
       null,
@@ -387,6 +403,7 @@ export const Storage = {
 
   importBackupJson(jsonString: string): boolean {
     try {
+      const uid = this.getCachedUserId() || undefined;
       const parsed = JSON.parse(jsonString);
       if (Array.isArray(parsed.habits) && Array.isArray(parsed.todos)) {
         this.saveHabits(parsed.habits);
@@ -406,6 +423,15 @@ export const Storage = {
         }
         if (parsed.savingsSettings) {
           this.saveSavingsSettings(parsed.savingsSettings);
+        }
+        if (Array.isArray(parsed.studySessions)) {
+          this.saveStudySessions(parsed.studySessions, uid);
+        }
+        if (Array.isArray(parsed.stopwatchRecords)) {
+          this.saveStopwatchRecords(parsed.stopwatchRecords, uid);
+        }
+        if (Array.isArray(parsed.studyNotes)) {
+          this.saveStudyNotes(parsed.studyNotes, uid);
         }
         if (parsed.settings) {
           this.saveSettings(parsed.settings);
@@ -504,6 +530,11 @@ export const Storage = {
         SAVINGS_GOALS_STORAGE_KEY,
         SAVINGS_TRANSACTIONS_STORAGE_KEY,
         SAVINGS_SETTINGS_STORAGE_KEY,
+        STUDY_SESSIONS_STORAGE_KEY,
+        ACTIVE_STUDY_TIMER_KEY,
+        STOPWATCH_RECORDS_STORAGE_KEY,
+        ACTIVE_STOPWATCH_KEY,
+        STUDY_NOTES_STORAGE_KEY,
         DELETED_IDS_KEY,
         'lifeos_notifications_v1',
         'lifeos_reminders_v1',
@@ -513,6 +544,7 @@ export const Storage = {
         'lifeos_notif_cleared_at',
         'lifeos_deleted_notif_ids_v1',
         'lifeos_pending_cloud_writes',
+        'lifeos_skipped_todo_occurrences_v1',
       ];
 
       for (const k of keysToClear) {
@@ -768,6 +800,172 @@ export const Storage = {
     try {
       const key = this.getSyncedKey(userId);
       localStorage.removeItem(key);
+    } catch {}
+  },
+
+  getSkippedTodoOccurrencesKey(userId?: string): string {
+    const uid = userId || this.getCachedUserId();
+    return uid
+      ? `lifeos_skipped_todo_occurrences_v1_${uid}`
+      : 'lifeos_skipped_todo_occurrences_v1';
+  },
+
+  getSkippedTodoOccurrences(userId?: string): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const key = this.getSkippedTodoOccurrencesKey(userId);
+      const raw = localStorage.getItem(key);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      return new Set();
+    }
+  },
+
+  addSkippedTodoOccurrence(occurrenceKey: string, userId?: string): void {
+    if (typeof window === 'undefined' || !occurrenceKey) return;
+    try {
+      const key = this.getSkippedTodoOccurrencesKey(userId);
+      const current = this.getSkippedTodoOccurrences(userId);
+      current.add(occurrenceKey);
+      const arr = Array.from(current).slice(-2000);
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch {}
+  },
+
+  clearSkippedTodoOccurrencesForSeries(seriesId: string, userId?: string): void {
+    if (typeof window === 'undefined' || !seriesId) return;
+    try {
+      const key = this.getSkippedTodoOccurrencesKey(userId);
+      const prefix = `${seriesId}_`;
+      const filtered = Array.from(this.getSkippedTodoOccurrences(userId)).filter(
+        (item) => !item.startsWith(prefix)
+      );
+      localStorage.setItem(key, JSON.stringify(filtered));
+    } catch {}
+  },
+
+  getStudySessions(userId?: string): StudySession[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STUDY_SESSIONS_STORAGE_KEY}_${uid}` : STUDY_SESSIONS_STORAGE_KEY;
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveStudySessions(sessions: StudySession[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STUDY_SESSIONS_STORAGE_KEY}_${uid}` : STUDY_SESSIONS_STORAGE_KEY;
+      localStorage.setItem(key, JSON.stringify(Array.isArray(sessions) ? sessions : []));
+    } catch {}
+  },
+
+  getActiveStudyTimer(userId?: string): ActiveStudyTimerState | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${ACTIVE_STUDY_TIMER_KEY}_${uid}` : ACTIVE_STUDY_TIMER_KEY;
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  saveActiveStudyTimer(timer: ActiveStudyTimerState | null, userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${ACTIVE_STUDY_TIMER_KEY}_${uid}` : ACTIVE_STUDY_TIMER_KEY;
+      if (timer) {
+        localStorage.setItem(key, JSON.stringify(timer));
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {}
+  },
+
+  getStopwatchRecords(userId?: string): StopwatchRecord[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STOPWATCH_RECORDS_STORAGE_KEY}_${uid}` : STOPWATCH_RECORDS_STORAGE_KEY;
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveStopwatchRecords(records: StopwatchRecord[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STOPWATCH_RECORDS_STORAGE_KEY}_${uid}` : STOPWATCH_RECORDS_STORAGE_KEY;
+      localStorage.setItem(key, JSON.stringify(Array.isArray(records) ? records : []));
+    } catch {}
+  },
+
+  getActiveStopwatch(userId?: string): ActiveStopwatchState | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${ACTIVE_STOPWATCH_KEY}_${uid}` : ACTIVE_STOPWATCH_KEY;
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  saveActiveStopwatch(stopwatch: ActiveStopwatchState | null, userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${ACTIVE_STOPWATCH_KEY}_${uid}` : ACTIVE_STOPWATCH_KEY;
+      if (stopwatch) {
+        localStorage.setItem(key, JSON.stringify(stopwatch));
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {}
+  },
+
+  getStudyNotes(userId?: string): StudyNote[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STUDY_NOTES_STORAGE_KEY}_${uid}` : STUDY_NOTES_STORAGE_KEY;
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveStudyNotes(notes: StudyNote[], userId?: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const uid = userId || this.getCachedUserId();
+      const key = uid ? `${STUDY_NOTES_STORAGE_KEY}_${uid}` : STUDY_NOTES_STORAGE_KEY;
+      localStorage.setItem(key, JSON.stringify(Array.isArray(notes) ? notes : []));
     } catch {}
   },
 };

@@ -16,9 +16,10 @@ import {
   limit,
   User,
 } from './firebase';
-import { startAfter, Query, QuerySnapshot, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
+import { startAfter, deleteField, Query, QuerySnapshot, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { Habit, HabitCompletion, Todo, UserSettings, Goal, SleepLog, SavingsGoal, SavingsTransaction, SavingsSettings } from './types';
 import { NotificationRecord, ReminderDefinition, NotificationSettings, PushSubscriptionRecord, AIDailyBriefing } from './notification-types';
+import { StudySession, ActiveStudyTimerState, StopwatchRecord, StudyNote } from './study-types';
 import { normalizeIsoTimestamp, normalizeTimestampMs } from './reminder-engine';
 import { recordNotificationDiagnostic } from './notification-diagnostics';
 
@@ -105,6 +106,14 @@ export interface PendingWrite {
     | 'savings_transaction'
     | 'savings_transaction_delete'
     | 'savings_settings'
+    | 'study_session'
+    | 'study_session_delete'
+    | 'active_study_timer'
+    | 'active_study_timer_delete'
+    | 'stopwatch_record'
+    | 'stopwatch_record_delete'
+    | 'study_note'
+    | 'study_note_delete'
     | 'settings'
     | 'notifications_clear_all'
     | 'notifications_delete_batch';
@@ -119,10 +128,24 @@ export function queuePendingWrite(write: PendingWrite, userId?: string): void {
     const key = getPendingQueueKey(userId);
     const raw = localStorage.getItem(key);
     const queue: PendingWrite[] = raw ? JSON.parse(raw) : [];
-    const targetId = write.id || (write.data && write.data.id) || (write.type === 'settings' ? 'settings' : '');
+    const targetId =
+      write.id ||
+      (write.data && write.data.id) ||
+      (write.type === 'settings'
+        ? 'settings'
+        : write.type === 'active_study_timer' || write.type === 'active_study_timer_delete'
+          ? 'active_study_timer'
+          : '');
     // Deduplicate: replace any older pending write for the exact same item
     const deduplicated = queue.filter((item) => {
-      const itemId = item.id || (item.data && item.data.id) || (item.type === 'settings' ? 'settings' : '');
+      const itemId =
+        item.id ||
+        (item.data && item.data.id) ||
+        (item.type === 'settings'
+          ? 'settings'
+          : item.type === 'active_study_timer' || item.type === 'active_study_timer_delete'
+            ? 'active_study_timer'
+            : '');
       return !(itemId && itemId === targetId);
     });
     deduplicated.push(write);
@@ -138,7 +161,14 @@ export function removePendingWrite(type: string, id: string, userId?: string): v
     if (!raw) return;
     const queue: PendingWrite[] = JSON.parse(raw);
     const filtered = queue.filter((item) => {
-      const itemId = item.id || (item.data && item.data.id) || (item.type === 'settings' ? 'settings' : '');
+      const itemId =
+        item.id ||
+        (item.data && item.data.id) ||
+        (item.type === 'settings'
+          ? 'settings'
+          : item.type === 'active_study_timer' || item.type === 'active_study_timer_delete'
+            ? 'active_study_timer'
+            : '');
       return !(item.type === type && itemId === id);
     });
     localStorage.setItem(key, JSON.stringify(filtered));
@@ -225,6 +255,30 @@ export async function flushPendingCloudWrites(userId: string): Promise<void> {
             break;
           case 'savings_settings':
             if (item.data) await syncSavingsSettingsToCloud(userId, item.data, false);
+            break;
+          case 'study_session':
+            if (item.data) await syncStudySessionToCloud(userId, item.data, false);
+            break;
+          case 'study_session_delete':
+            if (item.id) await deleteStudySessionFromCloud(userId, item.id, false);
+            break;
+          case 'active_study_timer':
+            await syncActiveStudyTimerToCloud(userId, item.data ?? null, false);
+            break;
+          case 'active_study_timer_delete':
+            await syncActiveStudyTimerToCloud(userId, null, false);
+            break;
+          case 'stopwatch_record':
+            if (item.data) await syncStopwatchRecordToCloud(userId, item.data, false);
+            break;
+          case 'stopwatch_record_delete':
+            if (item.id) await deleteStopwatchRecordFromCloud(userId, item.id, false);
+            break;
+          case 'study_note':
+            if (item.data) await syncStudyNoteToCloud(userId, item.data, false);
+            break;
+          case 'study_note_delete':
+            if (item.id) await deleteStudyNoteFromCloud(userId, item.id, false);
             break;
           case 'settings':
             if (item.data) await syncSettingsToCloud(userId, item.data, false);
@@ -365,7 +419,16 @@ export async function syncHabitToCloud(userId: string, habit: Habit, shouldQueue
   }
   try {
     const habitRef = doc(db, 'users', userId, 'habits', habit.id);
-    await setDoc(habitRef, cleanForFirestore(habit), { merge: true });
+    const payload: Record<string, unknown> = {
+      ...cleanForFirestore(habit),
+    };
+    if (!habit.reminderTime) {
+      payload.reminderTime = deleteField();
+    }
+    if (!habit.description) {
+      payload.description = deleteField();
+    }
+    await setDoc(habitRef, payload, { merge: true });
     clearCloudDeletion(userId, habit.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('habit', habit.id);
@@ -456,13 +519,82 @@ export async function syncTodoToCloud(userId: string, todo: Todo, shouldQueue = 
   }
   try {
     const todoRef = doc(db, 'users', userId, 'todos', todo.id);
-    await setDoc(todoRef, cleanForFirestore(todo), { merge: true });
+    const payload: Record<string, unknown> = {
+      ...cleanForFirestore(todo),
+    };
+    if (!todo.dueTime) payload.dueTime = deleteField();
+    if (!todo.notes) payload.notes = deleteField();
+    if (!todo.category) payload.category = deleteField();
+    if (!todo.taskType) payload.taskType = deleteField();
+    if (!todo.estimatedDurationMinutes || todo.taskType !== 'study') {
+      payload.estimatedDurationMinutes = deleteField();
+    }
+    if (!todo.recurrence || todo.recurrence === 'none') {
+      payload.recurrence = deleteField();
+      payload.recurrenceDays = deleteField();
+      payload.recurrenceSeriesId = deleteField();
+      payload.recurrenceStartDate = deleteField();
+    } else if (!todo.recurrenceDays || todo.recurrenceDays.length === 0) {
+      payload.recurrenceDays = deleteField();
+    }
+    await setDoc(todoRef, payload, { merge: true });
     clearCloudDeletion(userId, todo.id).catch(() => {});
     if (shouldQueue) {
       removePendingWrite('todo', todo.id);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${userId}/todos/${todo.id}`);
+  }
+}
+
+export async function syncTodosBatchToCloud(
+  userId: string,
+  todos: Todo[],
+  shouldQueue = true
+): Promise<void> {
+  if (!userId || !todos || todos.length === 0) return;
+  if (shouldQueue) {
+    for (const todo of todos) {
+      queuePendingWrite({ type: 'todo', data: todo, timestamp: Date.now() });
+    }
+  }
+
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < todos.length; i += CHUNK_SIZE) {
+    const chunk = todos.slice(i, i + CHUNK_SIZE);
+    try {
+      const batch = writeBatch(db);
+      for (const todo of chunk) {
+        const todoRef = doc(db, 'users', userId, 'todos', todo.id);
+        const payload: Record<string, unknown> = {
+          ...cleanForFirestore(todo),
+        };
+        if (!todo.dueTime) payload.dueTime = deleteField();
+        if (!todo.notes) payload.notes = deleteField();
+        if (!todo.category) payload.category = deleteField();
+        if (!todo.taskType) payload.taskType = deleteField();
+        if (!todo.estimatedDurationMinutes || todo.taskType !== 'study') {
+          payload.estimatedDurationMinutes = deleteField();
+        }
+        if (!todo.recurrence || todo.recurrence === 'none') {
+          payload.recurrence = deleteField();
+          payload.recurrenceDays = deleteField();
+          payload.recurrenceSeriesId = deleteField();
+          payload.recurrenceStartDate = deleteField();
+        } else if (!todo.recurrenceDays || todo.recurrenceDays.length === 0) {
+          payload.recurrenceDays = deleteField();
+        }
+        batch.set(todoRef, payload, { merge: true });
+      }
+      await batch.commit();
+      if (shouldQueue) {
+        for (const todo of chunk) {
+          removePendingWrite('todo', todo.id);
+        }
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${userId}/todos`);
+    }
   }
 }
 
@@ -482,6 +614,45 @@ export async function deleteTodoFromCloud(userId: string, todoId: string, should
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `users/${userId}/todos/${todoId}`);
+  }
+}
+
+export async function deleteTodosBatchFromCloud(
+  userId: string,
+  todoIds: string[],
+  shouldQueue = true
+): Promise<void> {
+  if (!userId || !todoIds || todoIds.length === 0) return;
+  const uniqueIds = Array.from(new Set(todoIds.filter(Boolean)));
+  if (shouldQueue) {
+    for (const id of uniqueIds) {
+      queuePendingWrite({ type: 'todo_delete', id, timestamp: Date.now() });
+    }
+  }
+
+  const CHUNK_SIZE = 150; // 2 writes per todo = 300 ops < 500 batch limit
+  const deletedAt = new Date().toISOString();
+  for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
+    try {
+      const batch = writeBatch(db);
+      for (const todoId of chunk) {
+        batch.delete(doc(db, 'users', userId, 'todos', todoId));
+        batch.set(
+          doc(db, 'users', userId, 'deletions', todoId),
+          { id: todoId, type: 'todo', deletedAt },
+          { merge: true }
+        );
+      }
+      await batch.commit();
+      if (shouldQueue) {
+        for (const todoId of chunk) {
+          removePendingWrite('todo_delete', todoId);
+        }
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `users/${userId}/todos`);
+    }
   }
 }
 
@@ -652,6 +823,166 @@ export async function syncSavingsSettingsToCloud(userId: string, settings: Savin
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${userId}/savingsSettings/settings`);
+  }
+}
+
+export async function syncStudySessionToCloud(
+  userId: string,
+  session: StudySession,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'study_session', data: session, timestamp: Date.now() });
+  }
+  try {
+    const sessionRef = doc(db, 'users', userId, 'studySessions', session.id);
+    await setDoc(sessionRef, cleanForFirestore(session), { merge: true });
+    clearCloudDeletion(userId, session.id).catch(() => {});
+    if (shouldQueue) {
+      removePendingWrite('study_session', session.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/studySessions/${session.id}`);
+  }
+}
+
+export async function deleteStudySessionFromCloud(
+  userId: string,
+  sessionId: string,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'study_session_delete', id: sessionId, timestamp: Date.now() });
+  }
+  try {
+    const sessionRef = doc(db, 'users', userId, 'studySessions', sessionId);
+    const delRef = doc(db, 'users', userId, 'deletions', sessionId);
+    const batch = writeBatch(db);
+    batch.delete(sessionRef);
+    batch.set(delRef, { id: sessionId, type: 'study_session', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+    if (shouldQueue) {
+      removePendingWrite('study_session_delete', sessionId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/studySessions/${sessionId}`);
+  }
+}
+
+export async function syncActiveStudyTimerToCloud(
+  userId: string,
+  timer: ActiveStudyTimerState | null,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({
+      type: timer ? 'active_study_timer' : 'active_study_timer_delete',
+      id: 'active_study_timer',
+      data: timer,
+      timestamp: Date.now(),
+    });
+  }
+  try {
+    const timerRef = doc(db, 'users', userId, 'studyRuntime', 'activeTimer');
+    if (timer) {
+      await setDoc(timerRef, cleanForFirestore(timer));
+      if (shouldQueue) removePendingWrite('active_study_timer', 'active_study_timer');
+    } else {
+      await deleteDoc(timerRef);
+      if (shouldQueue) removePendingWrite('active_study_timer_delete', 'active_study_timer');
+    }
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      timer ? OperationType.WRITE : OperationType.DELETE,
+      `users/${userId}/studyRuntime/activeTimer`
+    );
+  }
+}
+
+export async function syncStopwatchRecordToCloud(
+  userId: string,
+  record: StopwatchRecord,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'stopwatch_record', data: record, timestamp: Date.now() });
+  }
+  try {
+    const recRef = doc(db, 'users', userId, 'stopwatchRecords', record.id);
+    await setDoc(recRef, cleanForFirestore(record), { merge: true });
+    clearCloudDeletion(userId, record.id).catch(() => {});
+    if (shouldQueue) {
+      removePendingWrite('stopwatch_record', record.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/stopwatchRecords/${record.id}`);
+  }
+}
+
+export async function deleteStopwatchRecordFromCloud(
+  userId: string,
+  recordId: string,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'stopwatch_record_delete', id: recordId, timestamp: Date.now() });
+  }
+  try {
+    const recRef = doc(db, 'users', userId, 'stopwatchRecords', recordId);
+    const delRef = doc(db, 'users', userId, 'deletions', recordId);
+    const batch = writeBatch(db);
+    batch.delete(recRef);
+    batch.set(delRef, { id: recordId, type: 'stopwatch_record', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+    if (shouldQueue) {
+      removePendingWrite('stopwatch_record_delete', recordId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/stopwatchRecords/${recordId}`);
+  }
+}
+
+export async function syncStudyNoteToCloud(
+  userId: string,
+  note: StudyNote,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'study_note', data: note, timestamp: Date.now() });
+  }
+  try {
+    const noteRef = doc(db, 'users', userId, 'studyNotes', note.id);
+    await setDoc(noteRef, cleanForFirestore(note), { merge: true });
+    clearCloudDeletion(userId, note.id).catch(() => {});
+    if (shouldQueue) {
+      removePendingWrite('study_note', note.id);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}/studyNotes/${note.id}`);
+  }
+}
+
+export async function deleteStudyNoteFromCloud(
+  userId: string,
+  noteId: string,
+  shouldQueue = true
+): Promise<void> {
+  if (shouldQueue) {
+    queuePendingWrite({ type: 'study_note_delete', id: noteId, timestamp: Date.now() });
+  }
+  try {
+    const noteRef = doc(db, 'users', userId, 'studyNotes', noteId);
+    const delRef = doc(db, 'users', userId, 'deletions', noteId);
+    const batch = writeBatch(db);
+    batch.delete(noteRef);
+    batch.set(delRef, { id: noteId, type: 'study_note', deletedAt: new Date().toISOString() }, { merge: true });
+    await batch.commit();
+    if (shouldQueue) {
+      removePendingWrite('study_note_delete', noteId);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/studyNotes/${noteId}`);
   }
 }
 
@@ -1157,6 +1488,10 @@ export interface CloudDataResult {
   savingsGoals: SavingsGoal[] | null;
   savingsTransactions: SavingsTransaction[] | null;
   savingsSettings: SavingsSettings | null;
+  studySessions: StudySession[] | null;
+  activeStudyTimer: ActiveStudyTimerState | null;
+  stopwatchRecords: StopwatchRecord[] | null;
+  studyNotes: StudyNote[] | null;
   settings: UserSettings | null;
   deletions: Map<string, string>;
 }
@@ -1167,7 +1502,22 @@ export interface CloudDataResult {
 export async function fetchAllCloudData(userId: string): Promise<CloudDataResult | null> {
   if (!userId) return null;
   try {
-    const [habitsRes, compRes, todosRes, goalsRes, sleepRes, savingsGoalsRes, savingsTxRes, savingsSettingsRes, settingsRes, delRes] = await Promise.allSettled([
+    const [
+      habitsRes,
+      compRes,
+      todosRes,
+      goalsRes,
+      sleepRes,
+      savingsGoalsRes,
+      savingsTxRes,
+      savingsSettingsRes,
+      studySessionsRes,
+      activeTimerRes,
+      stopwatchRes,
+      studyNotesRes,
+      settingsRes,
+      delRes,
+    ] = await Promise.allSettled([
       getDocs(collection(db, 'users', userId, 'habits')),
       getDocs(collection(db, 'users', userId, 'habitCompletions')),
       getDocs(collection(db, 'users', userId, 'todos')),
@@ -1176,6 +1526,10 @@ export async function fetchAllCloudData(userId: string): Promise<CloudDataResult
       getDocs(collection(db, 'users', userId, 'savingsGoals')),
       getDocs(collection(db, 'users', userId, 'savingsTransactions')),
       getDoc(doc(db, 'users', userId, 'savingsSettings', 'settings')),
+      getDocs(collection(db, 'users', userId, 'studySessions')),
+      getDoc(doc(db, 'users', userId, 'studyRuntime', 'activeTimer')),
+      getDocs(collection(db, 'users', userId, 'stopwatchRecords')),
+      getDocs(collection(db, 'users', userId, 'studyNotes')),
       getDoc(doc(db, 'users', userId, 'settings', 'user_settings')),
       getDocs(collection(db, 'users', userId, 'deletions')),
     ]);
@@ -1220,6 +1574,26 @@ export async function fetchAllCloudData(userId: string): Promise<CloudDataResult
       savingsSettings = savingsSettingsRes.value.data() as SavingsSettings;
     }
 
+    const studySessions: StudySession[] | null =
+      studySessionsRes.status === 'fulfilled'
+        ? studySessionsRes.value.docs.map((d) => d.data() as StudySession).sort((a, b) => b.startTimestamp - a.startTimestamp)
+        : null;
+
+    let activeStudyTimer: ActiveStudyTimerState | null = null;
+    if (activeTimerRes.status === 'fulfilled' && activeTimerRes.value.exists()) {
+      activeStudyTimer = activeTimerRes.value.data() as ActiveStudyTimerState;
+    }
+
+    const stopwatchRecords: StopwatchRecord[] | null =
+      stopwatchRes.status === 'fulfilled'
+        ? stopwatchRes.value.docs.map((d) => d.data() as StopwatchRecord).sort((a, b) => b.startTimestamp - a.startTimestamp)
+        : null;
+
+    const studyNotes: StudyNote[] | null =
+      studyNotesRes.status === 'fulfilled'
+        ? studyNotesRes.value.docs.map((d) => d.data() as StudyNote).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        : null;
+
     let settings: UserSettings | null = null;
     if (settingsRes.status === 'fulfilled' && settingsRes.value.exists()) {
       settings = settingsRes.value.data() as UserSettings;
@@ -1235,7 +1609,22 @@ export async function fetchAllCloudData(userId: string): Promise<CloudDataResult
       });
     }
 
-    return { habits, completions, todos, goals, sleepLogs, savingsGoals, savingsTransactions, savingsSettings, settings, deletions };
+    return {
+      habits,
+      completions,
+      todos,
+      goals,
+      sleepLogs,
+      savingsGoals,
+      savingsTransactions,
+      savingsSettings,
+      studySessions,
+      activeStudyTimer,
+      stopwatchRecords,
+      studyNotes,
+      settings,
+      deletions,
+    };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${userId}`);
     return null;
@@ -1285,6 +1674,10 @@ export function subscribeToUserCloudData(
     onSavingsGoals?: (savingsGoals: SavingsGoal[], meta?: CloudSnapshotMeta) => void;
     onSavingsTransactions?: (savingsTransactions: SavingsTransaction[], meta?: CloudSnapshotMeta) => void;
     onSavingsSettings?: (savingsSettings: SavingsSettings, meta?: CloudSnapshotMeta) => void;
+    onStudySessions?: (sessions: StudySession[], meta?: CloudSnapshotMeta) => void;
+    onActiveStudyTimer?: (timer: ActiveStudyTimerState | null, meta?: CloudSnapshotMeta) => void;
+    onStopwatchRecords?: (records: StopwatchRecord[], meta?: CloudSnapshotMeta) => void;
+    onStudyNotes?: (notes: StudyNote[], meta?: CloudSnapshotMeta) => void;
     onNotifications?: (notifications: NotificationRecord[], meta?: CloudSnapshotMeta) => void;
     onDismissedNotifications?: (state: CloudDismissedNotificationsState, meta?: CloudSnapshotMeta) => void;
     onReminders?: (reminders: ReminderDefinition[], meta?: CloudSnapshotMeta) => void;
@@ -1683,6 +2076,99 @@ export function subscribeToUserCloudData(
       ),
     OperationType.LIST,
     `users/${userId}/aiBriefings`
+  );
+
+  attachListener(
+    'studySessions',
+    (onError) =>
+      onSnapshot(
+        collection(db, 'users', userId, 'studySessions'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          retryAttempts.delete('studySessions');
+          const list: StudySession[] = [];
+          snap.forEach((d) => list.push(d.data() as StudySession));
+          list.sort((a, b) => b.startTimestamp - a.startTimestamp);
+          if (handlers.onStudySessions) {
+            handlers.onStudySessions(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/studySessions`
+  );
+
+  attachListener(
+    'activeStudyTimer',
+    (onError) =>
+      onSnapshot(
+        doc(db, 'users', userId, 'studyRuntime', 'activeTimer'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          retryAttempts.delete('activeStudyTimer');
+          if (handlers.onActiveStudyTimer) {
+            handlers.onActiveStudyTimer(snap.exists() ? (snap.data() as ActiveStudyTimerState) : null, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        onError
+      ),
+    OperationType.GET,
+    `users/${userId}/studyRuntime/activeTimer`
+  );
+
+  attachListener(
+    'stopwatchRecords',
+    (onError) =>
+      onSnapshot(
+        collection(db, 'users', userId, 'stopwatchRecords'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          retryAttempts.delete('stopwatchRecords');
+          const list: StopwatchRecord[] = [];
+          snap.forEach((d) => list.push(d.data() as StopwatchRecord));
+          list.sort((a, b) => b.startTimestamp - a.startTimestamp);
+          if (handlers.onStopwatchRecords) {
+            handlers.onStopwatchRecords(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/stopwatchRecords`
+  );
+
+  attachListener(
+    'studyNotes',
+    (onError) =>
+      onSnapshot(
+        collection(db, 'users', userId, 'studyNotes'),
+        (snap) => {
+          if (isUnsubscribed) return;
+          retryAttempts.delete('studyNotes');
+          const list: StudyNote[] = [];
+          snap.forEach((d) => list.push(d.data() as StudyNote));
+          list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+          if (handlers.onStudyNotes) {
+            handlers.onStudyNotes(list, {
+              fromCache: snap.metadata.fromCache,
+              hasPendingWrites: snap.metadata.hasPendingWrites,
+            });
+          }
+        },
+        onError
+      ),
+    OperationType.LIST,
+    `users/${userId}/studyNotes`
   );
 
   attachListener(

@@ -258,3 +258,57 @@ export function createNotificationsBackupJson(notifications: NotificationRecord[
     2
   );
 }
+
+/**
+ * Displays a native OS/browser notification using ServiceWorkerRegistration.showNotification()
+ * when available (required on Android/PWA/some browsers), falling back to window.Notification.
+ */
+export async function pushBrowserNotification(notif: NotificationRecord): Promise<boolean> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return false;
+  }
+  if (Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const tag = notif.idempotencyKey || notif.deduplicationKey || notif.id;
+  const options: NotificationOptions & { vibrate?: number[] } = {
+    body: notif.message,
+    icon: '/pwa-192x192.png',
+    badge: '/icon.svg',
+    tag,
+    data: {
+      url: notif.deepLink || '/',
+      id: notif.id,
+      category: notif.category,
+    },
+    requireInteraction: notif.priority === 'urgent' || notif.priority === 'high',
+    vibrate: [100, 50, 100],
+  };
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const existingReg = await navigator.serviceWorker.getRegistration().catch(() => undefined);
+      const reg =
+        existingReg ||
+        (await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 600)),
+        ]).catch(() => undefined));
+
+      if (reg && typeof reg.showNotification === 'function') {
+        await reg.showNotification(notif.title, options);
+        return true;
+      }
+    }
+  } catch {
+    // Fall back to direct Notification constructor below
+  }
+
+  try {
+    new Notification(notif.title, options);
+    return true;
+  } catch {
+    return false;
+  }
+}

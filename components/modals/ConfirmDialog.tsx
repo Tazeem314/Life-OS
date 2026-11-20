@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle, Download, Loader2, X } from 'lucide-react';
+import { AlertTriangle, Download, Loader2, Trash2, X } from 'lucide-react';
 
 interface ConfirmDialogProps {
   isOpen: boolean;
@@ -15,6 +15,7 @@ interface ConfirmDialogProps {
   secondaryAction?: {
     label: string;
     onClick: () => void;
+    variant?: 'default' | 'destructive';
   };
   onConfirm: () => void;
   onCancel: () => void;
@@ -86,9 +87,17 @@ export function ConfirmDialog({
                     type="button"
                     onClick={secondaryAction.onClick}
                     disabled={isLoading}
-                    className="mt-3.5 w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/70 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition cursor-pointer disabled:opacity-50"
+                    className={`mt-3.5 w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl border transition cursor-pointer disabled:opacity-50 ${
+                      secondaryAction.variant === 'destructive'
+                        ? 'border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-950/70'
+                        : 'border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/70 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
                   >
-                    <Download className="w-3.5 h-3.5 text-sky-500" />
+                    {secondaryAction.variant === 'destructive' ? (
+                      <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5 text-sky-500" />
+                    )}
                     <span>{secondaryAction.label}</span>
                   </button>
                 )}

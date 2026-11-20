@@ -1,5 +1,7 @@
 export type HabitFrequency = 'daily' | 'weekdays' | 'weekly';
 
+export type TodoRecurrence = 'none' | 'daily' | 'weekdays' | 'weekly';
+
 export type Priority = 'low' | 'medium' | 'high';
 
 export interface Habit {
@@ -36,8 +38,14 @@ export interface Todo {
   dueTime?: string; // HH:MM
   notes?: string;
   category?: string; // e.g. Work, Personal, Study, Health, Urgent
+  taskType?: 'study' | 'non_study';
+  estimatedDurationMinutes?: number; // integer minutes (optional, mainly for study tasks)
   completed: boolean;
   order: number;
+  recurrence?: TodoRecurrence;
+  recurrenceDays?: number[]; // 0 = Sunday .. 6 = Saturday
+  recurrenceSeriesId?: string;
+  recurrenceStartDate?: string; // YYYY-MM-DD anchor start date
   createdAt: string;
   updatedAt: string;
 }
@@ -79,9 +87,24 @@ export interface OverallStreakInfo {
   totalTodoCompletions: number;
 }
 
-export type ActiveTab = 'dashboard' | 'habits' | 'todos' | 'goals' | 'savings' | 'sleep' | 'notifications' | 'calendar' | 'progress' | 'settings';
+export type ActiveTab =
+  | 'dashboard'
+  | 'habits'
+  | 'todos'
+  | 'study_timer'
+  | 'stopwatch'
+  | 'study_analytics'
+  | 'study_notes'
+  | 'goals'
+  | 'savings'
+  | 'sleep'
+  | 'notifications'
+  | 'calendar'
+  | 'progress'
+  | 'settings';
 
 export * from './notification-types';
+export * from './study-types';
 
 export interface ToastMessage {
   id: string;

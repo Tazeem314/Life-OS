@@ -3,13 +3,17 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useLifeOS } from '@/context/LifeOSContext';
-import { Todo, Priority } from '@/lib/types';
+import { Todo, Priority, TodoRecurrence, TodoTaskType, STUDY_DURATION_PRESETS } from '@/lib/types';
 import {
   formatDisplayDate,
   formatFullHeaderDate,
   getTodayKey,
   addDays,
+  DAYS_SHORT,
+  getDayOfWeek,
 } from '@/lib/date-utils';
+import { getRecurrenceSummaryText } from '@/lib/todo-recurrence';
+import { formatStudyMinutes, isStudyTodo } from '@/lib/study-service';
 import {
   CheckSquare,
   Plus,
@@ -24,6 +28,9 @@ import {
   Calendar,
   Check,
   AlignLeft,
+  Repeat,
+  GraduationCap,
+  Hourglass,
 } from 'lucide-react';
 
 interface TodoViewProps {
@@ -40,13 +47,26 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
     goToToday,
     goToPrevDay,
     goToNextDay,
+    createTodo,
     toggleTodoCompletion,
     reorderTodos,
     getDayProgress,
   } = useLifeOS();
 
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all');
+  const [taskTypeFilter, setTaskTypeFilter] = useState<'all' | TodoTaskType>('all');
   const [showCompleted, setShowCompleted] = useState<boolean>(true);
+
+  // Quick Add state
+  const [quickTitle, setQuickTitle] = useState('');
+  const [quickDateOverride, setQuickDateOverride] = useState<string | null>(null);
+  const [quickRecurrence, setQuickRecurrence] = useState<TodoRecurrence>('none');
+  const [quickDays, setQuickDays] = useState<number[]>([]);
+  const [quickTaskType, setQuickTaskType] = useState<TodoTaskType>('non_study');
+  const [quickEstMinutes, setQuickEstMinutes] = useState<string>('');
+  const [quickError, setQuickError] = useState('');
+
+  const effectiveQuickDate = quickDateOverride ?? selectedDate;
 
   const todayKey = getTodayKey();
   const dateProgress = getDayProgress(selectedDate);
@@ -58,6 +78,8 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
 
   const filteredTodos = dateTodos.filter((t) => {
     if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
+    if (taskTypeFilter === 'study' && !isStudyTodo(t)) return false;
+    if (taskTypeFilter === 'non_study' && isStudyTodo(t)) return false;
     if (!showCompleted && t.completed) return false;
     return true;
   });
@@ -66,6 +88,79 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
     const targetIndex = direction === 'up' ? index - 1 : index + 1;
     if (targetIndex < 0 || targetIndex >= dateTodos.length) return;
     reorderTodos(selectedDate, index, targetIndex);
+  };
+
+  const handleQuickRecurrenceChange = (mode: TodoRecurrence) => {
+    setQuickRecurrence(mode);
+    setQuickError('');
+    if (mode === 'weekdays') {
+      setQuickDays([1, 2, 3, 4, 5]);
+    } else if (mode === 'weekly') {
+      setQuickDays((prev) =>
+        prev.length > 0 ? prev : [getDayOfWeek(effectiveQuickDate || todayKey)]
+      );
+    } else {
+      setQuickDays([]);
+    }
+  };
+
+  const toggleQuickDay = (dayIdx: number) => {
+    setQuickDays((prev) => {
+      if (prev.includes(dayIdx)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((d) => d !== dayIdx);
+      }
+      return [...prev, dayIdx].sort((a, b) => a - b);
+    });
+  };
+
+  const handleQuickAddSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickTitle.trim()) {
+      setQuickError('Enter a task title to quick add.');
+      return;
+    }
+    if (!effectiveQuickDate) {
+      setQuickError('Pick a date.');
+      return;
+    }
+
+    const parsedQuickEst =
+      quickTaskType === 'study' && quickEstMinutes
+        ? parseInt(quickEstMinutes, 10)
+        : undefined;
+
+    const res = createTodo({
+      title: quickTitle.trim(),
+      date: effectiveQuickDate,
+      priority: 'medium',
+      category: quickTaskType === 'study' ? 'Study' : 'General',
+      taskType: quickTaskType,
+      estimatedDurationMinutes:
+        parsedQuickEst && Number.isFinite(parsedQuickEst) && parsedQuickEst > 0
+          ? parsedQuickEst
+          : undefined,
+      completed: false,
+      recurrence: quickRecurrence === 'none' ? undefined : quickRecurrence,
+      recurrenceDays:
+        quickRecurrence === 'weekdays' || quickRecurrence === 'weekly'
+          ? quickDays
+          : undefined,
+      recurrenceStartDate:
+        quickRecurrence === 'none' ? undefined : effectiveQuickDate,
+    });
+
+    if (res.success) {
+      setQuickTitle('');
+      setQuickDateOverride(null);
+      setQuickRecurrence('none');
+      setQuickDays([]);
+      setQuickTaskType('non_study');
+      setQuickEstMinutes('');
+      setQuickError('');
+    } else if (res.error) {
+      setQuickError(res.error);
+    }
   };
 
   return (
@@ -182,7 +277,121 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
         </div>
       </div>
 
-      {/* Priority Filters & Completed Toggle */}
+      {/* Quick Add To-Do Bar (with optional recurrence) */}
+      <form
+        onSubmit={handleQuickAddSubmit}
+        className="p-3.5 sm:p-4 bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs space-y-2.5"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            type="text"
+            value={quickTitle}
+            onChange={(e) => {
+              setQuickTitle(e.target.value);
+              if (quickError) setQuickError('');
+            }}
+            placeholder="Quick add a task or recurring to-do..."
+            aria-label="Quick add to-do title"
+            className="flex-1 min-w-0 px-3.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+          />
+
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <select
+              value={quickTaskType}
+              onChange={(e) => setQuickTaskType(e.target.value as TodoTaskType)}
+              aria-label="Quick add task type"
+              className="px-2.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-700 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+            >
+              <option value="non_study">Non-Study</option>
+              <option value="study">Study</option>
+            </select>
+
+            {quickTaskType === 'study' && (
+              <select
+                value={quickEstMinutes}
+                onChange={(e) => setQuickEstMinutes(e.target.value)}
+                aria-label="Quick add estimated study duration"
+                className="px-2.5 py-2 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
+              >
+                <option value="">No Est.</option>
+                {STUDY_DURATION_PRESETS.map((p) => (
+                  <option key={p.minutes} value={String(p.minutes)}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <input
+              type="date"
+              value={effectiveQuickDate}
+              onChange={(e) => {
+                if (e.target.value) setQuickDateOverride(e.target.value);
+              }}
+              aria-label="Quick add date"
+              className="px-2.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-medium text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+
+            <select
+              value={quickRecurrence}
+              onChange={(e) => handleQuickRecurrenceChange(e.target.value as TodoRecurrence)}
+              aria-label="Quick add recurrence pattern"
+              className="px-2.5 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-700 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+            >
+              <option value="none">One-time</option>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Weekdays (Mon–Fri)</option>
+              <option value="weekly">Weekly / Specific Days</option>
+            </select>
+
+            <button
+              type="submit"
+              className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold rounded-xl shadow-xs transition flex items-center gap-1 shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Quick Add</span>
+            </button>
+          </div>
+        </div>
+
+        {quickRecurrence === 'weekly' && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-zinc-100 dark:border-zinc-800/80">
+            <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400 flex items-center gap-1">
+              <Repeat className="w-3 h-3 text-indigo-500" />
+              Repeat on:
+            </span>
+            <div className="flex items-center gap-1">
+              {DAYS_SHORT.map((dayName, idx) => {
+                const active = quickDays.includes(idx);
+                return (
+                  <button
+                    key={dayName}
+                    type="button"
+                    onClick={() => toggleQuickDay(idx)}
+                    aria-label={`Quick add toggle ${dayName}`}
+                    aria-pressed={active}
+                    className={`w-7 h-7 rounded-lg text-[11px] font-bold transition flex items-center justify-center ${
+                      active
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:border-indigo-400 border border-zinc-200 dark:border-zinc-700'
+                    }`}
+                  >
+                    {dayName[0]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {quickError && (
+          <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">
+            {quickError}
+          </p>
+        )}
+      </form>
+
+      {/* Priority & Task Type Filters & Completed Toggle */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
           {(['all', 'high', 'medium', 'low'] as const).map((prio) => (
@@ -198,11 +407,31 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
               {prio} Priority
             </button>
           ))}
+          <span className="text-zinc-300 dark:text-zinc-700 px-0.5">|</span>
+          {(
+            [
+              { id: 'all', label: 'All Types' },
+              { id: 'study', label: 'Study' },
+              { id: 'non_study', label: 'Non-Study' },
+            ] as const
+          ).map((tf) => (
+            <button
+              key={tf.id}
+              onClick={() => setTaskTypeFilter(tf.id)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+                taskTypeFilter === tf.id
+                  ? 'bg-sky-600 text-white shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60'
+              }`}
+            >
+              {tf.label}
+            </button>
+          ))}
         </div>
 
         <button
           onClick={() => setShowCompleted(!showCompleted)}
-          className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 font-medium self-start sm:self-auto py-1"
+          className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 font-medium self-start sm:self-auto py-1 shrink-0"
         >
           {showCompleted ? 'Hide Completed' : 'Show Completed'}
         </button>
@@ -289,6 +518,25 @@ export function TodoView({ onOpenNewTodo, onEditTodo, onDeleteTodo }: TodoViewPr
                         <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
                         {todo.priority}
                       </span>
+
+                      {isStudyTodo(todo) && (
+                        <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold text-[11px] shrink-0">
+                          <GraduationCap className="w-3 h-3" />
+                          <span>Study</span>
+                          {todo.estimatedDurationMinutes && todo.estimatedDurationMinutes > 0 && (
+                            <span className="font-mono tabular-nums text-zinc-500 dark:text-zinc-400 font-medium">
+                              · Est. {formatStudyMinutes(todo.estimatedDurationMinutes)}
+                            </span>
+                          )}
+                        </span>
+                      )}
+
+                      {todo.recurrence && todo.recurrence !== 'none' && (
+                        <span className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300 font-medium text-[11px] shrink-0">
+                          <Repeat className="w-3 h-3" />
+                          {getRecurrenceSummaryText(todo.recurrence, todo.recurrenceDays, todo.date)}
+                        </span>
+                      )}
 
                       {todo.dueTime && (
                         <span className="flex items-center gap-1 shrink-0">

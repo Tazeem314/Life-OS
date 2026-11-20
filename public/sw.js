@@ -75,7 +75,7 @@ self.addEventListener('push', (event) => {
     body: data.message || 'You have a new update in Life OS.',
     icon: '/pwa-192x192.png',
     badge: '/icon.svg',
-    tag: data.id || ('lifeos_' + Date.now()),
+    tag: data.idempotencyKey || data.deduplicationKey || data.id || ('lifeos_' + Date.now()),
     data: {
       url: data.deepLink || '/',
       id: data.id,

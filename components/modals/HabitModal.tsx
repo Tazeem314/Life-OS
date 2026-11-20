@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Habit, HabitFrequency } from '@/lib/types';
 import { getTodayKey, DAYS_SHORT } from '@/lib/date-utils';
+import { normalizeTimeHHMM } from '@/lib/reminder-engine';
 import {
   X,
   Sparkles,
@@ -22,6 +23,7 @@ import {
   Palette,
   Tag,
   Trash2,
+  Bell,
 } from 'lucide-react';
 
 export const HABIT_ICONS = [
@@ -86,7 +88,11 @@ function HabitFormInner({ habitToEdit, onClose, onSave, onDelete }: HabitFormInn
     habitToEdit?.daysOfWeek || [0, 1, 2, 3, 4, 5, 6]
   );
   const [startDate, setStartDate] = useState(habitToEdit?.startDate || getTodayKey());
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>(Boolean(habitToEdit?.reminderTime));
   const [reminderTime, setReminderTime] = useState(habitToEdit?.reminderTime || '');
+  const [browserPerm, setBrowserPerm] = useState<string>(() =>
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
+  );
   const [category, setCategory] = useState(habitToEdit?.category || 'Productivity');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -127,6 +133,11 @@ function HabitFormInner({ habitToEdit, onClose, onSave, onDelete }: HabitFormInn
       setErrorMessage('Please choose a start date.');
       return;
     }
+    const normalizedReminder = reminderEnabled ? normalizeTimeHHMM(reminderTime) : null;
+    if (reminderEnabled && !normalizedReminder) {
+      setErrorMessage('Please choose a reminder time or turn off the daily reminder.');
+      return;
+    }
 
     const result = onSave({
       name: name.trim(),
@@ -136,7 +147,7 @@ function HabitFormInner({ habitToEdit, onClose, onSave, onDelete }: HabitFormInn
       frequency,
       daysOfWeek,
       startDate,
-      reminderTime: reminderTime || undefined,
+      reminderTime: normalizedReminder || undefined,
       category,
       status: habitToEdit ? habitToEdit.status : 'active',
     });
@@ -304,6 +315,114 @@ function HabitFormInner({ habitToEdit, onClose, onSave, onDelete }: HabitFormInn
                     );
                   })}
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Optional Daily Reminder */}
+          <div className="p-3.5 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-200 dark:border-zinc-700/80 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition ${
+                    reminderEnabled
+                      ? 'bg-sky-100 text-sky-600 dark:bg-sky-950/70 dark:text-sky-400'
+                      : 'bg-zinc-200/70 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
+                  }`}
+                >
+                  <Bell className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <label
+                    htmlFor="habit-reminder-toggle"
+                    className="block text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-200 cursor-pointer"
+                  >
+                    Daily Reminder (Optional)
+                  </label>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    Notify on scheduled days if not yet completed
+                  </p>
+                </div>
+              </div>
+
+              <button
+                id="habit-reminder-toggle"
+                type="button"
+                role="switch"
+                aria-checked={reminderEnabled}
+                aria-label="Enable daily reminder"
+                onClick={() => {
+                  const next = !reminderEnabled;
+                  setReminderEnabled(next);
+                  if (next && !reminderTime) {
+                    setReminderTime('09:00');
+                  }
+                  if (next && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+                    Notification.requestPermission()
+                      .then((res) => setBrowserPerm(res))
+                      .catch(() => {});
+                  }
+                  if (!next) {
+                    setErrorMessage('');
+                  }
+                }}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                  reminderEnabled ? 'bg-sky-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-xs transition-transform ${
+                    reminderEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {reminderEnabled && (
+              <div className="pt-2 border-t border-zinc-200/70 dark:border-zinc-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="habit-reminder-time"
+                    className="text-xs font-medium text-zinc-600 dark:text-zinc-300 whitespace-nowrap"
+                  >
+                    Trigger Time
+                  </label>
+                  <input
+                    id="habit-reminder-time"
+                    type="time"
+                    value={reminderTime}
+                    onChange={(e) => {
+                      setReminderTime(e.target.value);
+                      if (errorMessage) setErrorMessage('');
+                    }}
+                    className="px-3 py-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-mono text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                </div>
+
+                {browserPerm === 'default' && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await Notification.requestPermission();
+                        setBrowserPerm(res);
+                      } catch {}
+                    }}
+                    className="text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline text-left sm:text-right cursor-pointer"
+                  >
+                    Enable browser alerts
+                  </button>
+                )}
+                {browserPerm === 'granted' && (
+                  <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                    In-app &amp; browser alerts active
+                  </span>
+                )}
+                {browserPerm === 'denied' && (
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    In-app alerts active (browser blocked)
+                  </span>
+                )}
               </div>
             )}
           </div>

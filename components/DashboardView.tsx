@@ -26,9 +26,15 @@ import {
   ListPlus,
   Target,
   Moon,
+  Repeat,
+  GraduationCap,
+  Timer,
+  BarChart3,
 } from 'lucide-react';
+import { getRecurrenceSummaryText } from '@/lib/todo-recurrence';
 import { getConnectedGoalHierarchy } from '@/lib/goal-service';
 import { formatDurationHoursMinutes, QUALITY_LABELS } from '@/lib/sleep-service';
+import { formatStudyDurationMs, formatStudyMinutes, isStudyTodo } from '@/lib/study-service';
 
 interface DashboardViewProps {
   onOpenNewHabit: () => void;
@@ -64,6 +70,8 @@ export function DashboardView({
     toggleGoalTask,
     toggleGoalChapter,
     setActiveTab,
+    studyDashboardSummary,
+    activeStudyTimer,
   } = useLifeOS();
 
   const todayKey = getTodayKey();
@@ -298,6 +306,78 @@ export function DashboardView({
         );
       })()}
 
+      {/* Study Time Today Summary Card */}
+      <div className="p-4 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800/80 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-3.5">
+        <div className="flex items-start sm:items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-sky-100/80 dark:bg-sky-950 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 border border-sky-200/60 dark:border-sky-800/60">
+            <GraduationCap className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                Study Time Today
+              </h3>
+              {activeStudyTimer && (
+                <span className="text-[10px] bg-sky-600 text-white px-1.5 py-0.5 rounded-sm font-semibold">
+                  {activeStudyTimer.status === 'running' ? 'Timer Running' : 'Timer Paused'}
+                </span>
+              )}
+              {studyDashboardSummary.studyTasksTotal > 0 && (
+                <span className="text-[11px] font-mono tabular-nums text-zinc-500 dark:text-zinc-400">
+                  · {studyDashboardSummary.studyTasksCompleted}/{studyDashboardSummary.studyTasksTotal} Study tasks ({studyDashboardSummary.studyTaskProgressPct}%)
+                </span>
+              )}
+            </div>
+
+            <div className="mt-1.5 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-[11px]">
+              <div>
+                <span className="text-zinc-400 dark:text-zinc-500">Planned: </span>
+                <span className="font-mono font-semibold tabular-nums text-zinc-800 dark:text-zinc-200">
+                  {formatStudyMinutes(studyDashboardSummary.plannedMinutes)}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-400 dark:text-zinc-500">Est. Done: </span>
+                <span className="font-mono font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {formatStudyMinutes(studyDashboardSummary.estimatedCompletedMinutes)}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-400 dark:text-zinc-500">Remaining: </span>
+                <span className="font-mono font-semibold tabular-nums text-zinc-700 dark:text-zinc-300">
+                  {formatStudyMinutes(studyDashboardSummary.remainingStudyMinutes)}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-400 dark:text-zinc-500">Actual: </span>
+                <span className="font-mono font-bold tabular-nums text-sky-600 dark:text-sky-400">
+                  {formatStudyDurationMs(studyDashboardSummary.actualStudiedMs)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab('study_timer')}
+            className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-2xs active:scale-95 whitespace-nowrap shrink-0"
+          >
+            <Timer className="w-3.5 h-3.5" />
+            <span>{activeStudyTimer ? 'Open Timer' : 'Study Timer'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('study_analytics')}
+            className="px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0"
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span>Analytics</span>
+          </button>
+        </div>
+      </div>
+
       {/* 3. Main Split Section: Today's Habits & Today's To-Dos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* Today's Habits Column */}
@@ -527,6 +607,29 @@ export function DashboardView({
                               <span className={`w-1.5 h-1.5 rounded-full ${prioDot}`} />
                               {todo.priority}
                             </span>
+                            {isStudyTodo(todo) && (
+                              <>
+                                <span>·</span>
+                                <span className="flex items-center gap-0.5 text-sky-600 dark:text-sky-400 font-semibold shrink-0">
+                                  <GraduationCap className="w-3 h-3" />
+                                  <span>Study</span>
+                                  {todo.estimatedDurationMinutes && todo.estimatedDurationMinutes > 0 && (
+                                    <span className="font-mono tabular-nums">
+                                      ({formatStudyMinutes(todo.estimatedDurationMinutes)})
+                                    </span>
+                                  )}
+                                </span>
+                              </>
+                            )}
+                            {todo.recurrence && todo.recurrence !== 'none' && (
+                              <>
+                                <span>·</span>
+                                <span className="flex items-center gap-0.5 text-indigo-600 dark:text-indigo-400 font-medium shrink-0">
+                                  <Repeat className="w-3 h-3" />
+                                  {getRecurrenceSummaryText(todo.recurrence, todo.recurrenceDays, todo.date)}
+                                </span>
+                              </>
+                            )}
                             {todo.dueTime && <span>·</span>}
                             {todo.dueTime && (
                               <span className="flex items-center gap-0.5 shrink-0">

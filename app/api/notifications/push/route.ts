@@ -45,6 +45,8 @@ export async function POST(req: NextRequest) {
 
     const payload = JSON.stringify({
       id: notification.id,
+      idempotencyKey: notification.idempotencyKey,
+      deduplicationKey: notification.deduplicationKey,
       title: notification.title,
       message: notification.message,
       category: notification.category,

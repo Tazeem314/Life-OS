@@ -59,8 +59,15 @@
         "priority": { "type": "string" },
         "dueTime": { "type": "string" },
         "notes": { "type": "string" },
+        "category": { "type": "string" },
         "completed": { "type": "boolean" },
         "order": { "type": "number" },
+        "recurrence": { "type": "string" },
+        "recurrenceDays": { "type": "array", "items": { "type": "number" } },
+        "recurrenceSeriesId": { "type": "string" },
+        "recurrenceStartDate": { "type": "string" },
+        "taskType": { "type": "string" },
+        "estimatedDurationMinutes": { "type": "number" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },
@@ -277,6 +284,92 @@
         "deletedAt": { "type": "string" }
       },
       "required": ["id", "type", "deletedAt"]
+    },
+    "StudySession": {
+      "title": "StudySession",
+      "description": "Completed study timer session (or manually converted stopwatch session)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "taskId": { "type": "string" },
+        "taskNameSnapshot": { "type": "string" },
+        "dateKey": { "type": "string" },
+        "startTimestamp": { "type": "number" },
+        "endTimestamp": { "type": "number" },
+        "actualDurationMs": { "type": "number" },
+        "actualDurationMinutes": { "type": "number" },
+        "pauseCount": { "type": "number" },
+        "totalPausedMs": { "type": "number" },
+        "notes": { "type": "string" },
+        "status": { "type": "string" },
+        "source": { "type": "string" },
+        "stopwatchRecordId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "taskNameSnapshot", "dateKey", "startTimestamp", "endTimestamp", "actualDurationMs", "actualDurationMinutes", "status"]
+    },
+    "ActiveStudyTimerState": {
+      "title": "ActiveStudyTimerState",
+      "description": "Active in-progress Study Timer state synced across reloads",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "userId": { "type": "string" },
+        "taskId": { "type": "string" },
+        "taskNameSnapshot": { "type": "string" },
+        "startTimestamp": { "type": "number" },
+        "segmentStartTimestamp": { "type": "number" },
+        "accumulatedActiveMs": { "type": "number" },
+        "totalPausedMs": { "type": "number" },
+        "pauseCount": { "type": "number" },
+        "pausedAtTimestamp": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["sessionId", "taskNameSnapshot", "startTimestamp", "accumulatedActiveMs", "status"]
+    },
+    "StopwatchRecord": {
+      "title": "StopwatchRecord",
+      "description": "Saved standalone stopwatch run with laps and optional conversion link",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "notes": { "type": "string" },
+        "dateKey": { "type": "string" },
+        "startTimestamp": { "type": "number" },
+        "endTimestamp": { "type": "number" },
+        "elapsedMs": { "type": "number" },
+        "laps": { "type": "array" },
+        "convertedToStudySessionId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "dateKey", "startTimestamp", "endTimestamp", "elapsedMs"]
+    },
+    "StudyNote": {
+      "title": "StudyNote",
+      "description": "Markdown study note with subject, tags, pin/favourite, video links, and file attachments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "contentMarkdown": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "isPinned": { "type": "boolean" },
+        "isFavorite": { "type": "boolean" },
+        "attachments": { "type": "array" },
+        "videoLinks": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "subject", "contentMarkdown", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -347,6 +440,22 @@
     "/users/{userId}/deletions/{deletionId}": {
       "schema": "DeletionRecord",
       "description": "Entity deletion tombstones"
+    },
+    "/users/{userId}/studySessions/{sessionId}": {
+      "schema": "StudySession",
+      "description": "Completed study timer sessions"
+    },
+    "/users/{userId}/studyRuntime/activeTimer": {
+      "schema": "ActiveStudyTimerState",
+      "description": "Active in-progress study timer document"
+    },
+    "/users/{userId}/stopwatchRecords/{recordId}": {
+      "schema": "StopwatchRecord",
+      "description": "Saved standalone stopwatch records"
+    },
+    "/users/{userId}/studyNotes/{noteId}": {
+      "schema": "StudyNote",
+      "description": "User markdown study notes and attachment metadata"
     }
   }
 }
