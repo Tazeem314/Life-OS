@@ -4,13 +4,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useLifeOS } from '@/context/LifeOSContext';
 import {
   computeActiveStudyElapsedMs,
+  computeStudyTargetProgress,
   formatHMS,
   formatStudyDurationMs,
   formatStudyMinutes,
   isStudyTodo,
 } from '@/lib/study-service';
+import { STUDY_DURATION_PRESETS } from '@/lib/study-types';
 import { getTodayKey, formatDisplayDate } from '@/lib/date-utils';
 import { ConfirmDialog } from '@/components/modals/ConfirmDialog';
+import { useStudyTimerPiP } from '@/components/study/StudyTimerPiPContext';
 import {
   Timer,
   Play,
@@ -24,6 +27,9 @@ import {
   Info,
   Clock,
   Plus,
+  PictureInPicture2,
+  Hourglass,
+  Bell,
 } from 'lucide-react';
 
 export function StudyTimerView() {
@@ -41,6 +47,7 @@ export function StudyTimerView() {
     setActiveTab,
   } = useLifeOS();
 
+  const { isFloatingOpen, toggleFloatingTimer } = useStudyTimerPiP();
   const todayKey = getTodayKey();
 
   // Live timer setup state (used when idle)
@@ -48,6 +55,9 @@ export function StudyTimerView() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [taskScopeFilter, setTaskScopeFilter] = useState<'today' | 'all_open'>('today');
   const [unlinkedLabel, setUnlinkedLabel] = useState<string>('');
+  const [targetMode, setTargetMode] = useState<'auto' | 'none' | 'preset' | 'custom'>('auto');
+  const [presetTargetMinutes, setPresetTargetMinutes] = useState<number>(60);
+  const [customTargetMinutes, setCustomTargetMinutes] = useState<string>('45');
   const [setupNotes, setSetupNotes] = useState<string>('');
   const [setupError, setSetupError] = useState<string>('');
 
@@ -56,6 +66,9 @@ export function StudyTimerView() {
   const [notesDraft, setNotesDraft] = useState<{ sessionId: string; text: string } | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+  const [notifPermission, setNotifPermission] = useState<string>(() =>
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
+  );
 
   const draftNotes =
     activeStudyTimer && notesDraft?.sessionId === activeStudyTimer.sessionId
@@ -105,12 +118,39 @@ export function StudyTimerView() {
     return firstOpen ? firstOpen.id : '';
   }, [sessionMode, studyTodos, selectedTaskId]);
 
+  const selectedLinkedTask = useMemo(() => {
+    if (sessionMode !== 'linked' || !effectiveSelectedTaskId) return null;
+    return studyTodos.find((t) => t.id === effectiveSelectedTaskId) || null;
+  }, [sessionMode, effectiveSelectedTaskId, studyTodos]);
+
+  const resolvedSetupTargetMinutes = useMemo<number | null>(() => {
+    if (targetMode === 'none') return null;
+    if (targetMode === 'preset') return presetTargetMinutes;
+    if (targetMode === 'custom') {
+      const parsed = parseInt(customTargetMinutes, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? Math.min(1440, parsed) : null;
+    }
+    // 'auto': inherit estimatedDurationMinutes from selected linked Study To-Do if present
+    if (
+      sessionMode === 'linked' &&
+      selectedLinkedTask?.estimatedDurationMinutes &&
+      selectedLinkedTask.estimatedDurationMinutes > 0
+    ) {
+      return selectedLinkedTask.estimatedDurationMinutes;
+    }
+    return null;
+  }, [targetMode, presetTargetMinutes, customTargetMinutes, sessionMode, selectedLinkedTask]);
+
   const elapsedMs = activeStudyTimer
     ? computeActiveStudyElapsedMs(
         activeStudyTimer,
         activeStudyTimer.status === 'running' ? nowMs : activeStudyTimer.pausedAtTimestamp || nowMs
       )
     : 0;
+
+  const targetProgress = activeStudyTimer
+    ? computeStudyTargetProgress(elapsedMs, activeStudyTimer.targetDurationMinutes)
+    : null;
 
   const livePausedMs = useMemo(() => {
     if (!activeStudyTimer) return 0;
@@ -121,29 +161,52 @@ export function StudyTimerView() {
     return (activeStudyTimer.totalPausedMs || 0) + extraPaused;
   }, [activeStudyTimer, nowMs]);
 
+  const handleRequestDesktopNotification = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    try {
+      const perm = await Notification.requestPermission();
+      setNotifPermission(perm);
+    } catch {}
+  };
+
   const handleStart = (e: React.FormEvent) => {
     e.preventDefault();
     setSetupError('');
+
+    if (targetMode === 'custom') {
+      const parsed = parseInt(customTargetMinutes, 10);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1440) {
+        setSetupError('Custom target duration must be between 1 and 1440 minutes.');
+        return;
+      }
+    }
 
     if (sessionMode === 'linked') {
       if (!effectiveSelectedTaskId) {
         setSetupError('Select a Study To-Do or switch to an Unlinked Study Session.');
         return;
       }
-      const res = startStudyTimer(effectiveSelectedTaskId, undefined, setupNotes);
+      const res = startStudyTimer(
+        effectiveSelectedTaskId,
+        undefined,
+        setupNotes,
+        resolvedSetupTargetMinutes
+      );
       if (!res.success && res.error) {
         setSetupError(res.error);
       } else {
         setSetupNotes('');
+        setTargetMode('auto');
       }
     } else {
       const label = unlinkedLabel.trim() || 'Unlinked Study Session';
-      const res = startStudyTimer(null, label, setupNotes);
+      const res = startStudyTimer(null, label, setupNotes, resolvedSetupTargetMinutes);
       if (!res.success && res.error) {
         setSetupError(res.error);
       } else {
         setUnlinkedLabel('');
         setSetupNotes('');
+        setTargetMode('auto');
       }
     }
   };
@@ -201,22 +264,91 @@ export function StudyTimerView() {
               </h2>
             </div>
 
-            <div className="text-xs text-zinc-500 dark:text-zinc-400 font-mono tabular-nums space-y-0.5 sm:text-right shrink-0">
-              <div>Started: {formatTimeOfDay(activeStudyTimer.startTimestamp)}</div>
-              <div>
-                Pauses: {activeStudyTimer.pauseCount} ({formatStudyDurationMs(livePausedMs)})
+            <div className="flex items-center gap-3 sm:justify-end shrink-0 flex-wrap">
+              <button
+                type="button"
+                onClick={() => void toggleFloatingTimer()}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                  isFloatingOpen
+                    ? 'bg-sky-600 border-sky-600 text-white shadow-xs hover:bg-sky-500'
+                    : 'bg-sky-50 dark:bg-sky-950/50 border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/60'
+                }`}
+              >
+                <PictureInPicture2 className="w-3.5 h-3.5" />
+                <span>{isFloatingOpen ? 'Floating Mini Timer On' : 'Float Mini Screen'}</span>
+              </button>
+
+              <div className="text-xs text-zinc-500 dark:text-zinc-400 font-mono tabular-nums space-y-0.5 sm:text-right shrink-0">
+                <div>Started: {formatTimeOfDay(activeStudyTimer.startTimestamp)}</div>
+                <div>
+                  Pauses: {activeStudyTimer.pauseCount} ({formatStudyDurationMs(livePausedMs)})
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Elapsed Time Readout */}
+          {/* Elapsed / Remaining Time Readout */}
           <div className="py-4 sm:py-6 flex flex-col items-center justify-center text-center">
-            <div className="text-5xl sm:text-7xl font-mono font-bold tabular-nums tracking-tight text-zinc-950 dark:text-zinc-50">
-              {formatHMS(elapsedMs)}
-            </div>
-            <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-2">
-              Actual focused time (excluding paused intervals)
-            </p>
+            {targetProgress?.hasTarget ? (
+              <div className="w-full max-w-md space-y-3">
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
+                  <Hourglass className="w-3.5 h-3.5 text-sky-500" />
+                  <span>
+                    {targetProgress.isOvertime
+                      ? 'Overtime (Target Completed)'
+                      : 'Time Left'}
+                  </span>
+                </div>
+
+                <div
+                  className={`text-5xl sm:text-7xl font-mono font-bold tabular-nums tracking-tight ${
+                    targetProgress.isOvertime
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-zinc-950 dark:text-zinc-50'
+                  }`}
+                >
+                  {targetProgress.primaryTimeLabel}
+                </div>
+
+                <div className="space-y-1.5 px-2">
+                  <progress
+                    value={targetProgress.progressPct}
+                    max={100}
+                    className={`w-full h-2.5 rounded-full overflow-hidden appearance-none [&::-webkit-progress-bar]:bg-zinc-100 dark:[&::-webkit-progress-bar]:bg-zinc-800 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:transition-all ${
+                      targetProgress.isOvertime
+                        ? '[&::-webkit-progress-value]:bg-amber-500'
+                        : '[&::-webkit-progress-value]:bg-sky-500'
+                    }`}
+                  />
+                  <div className="flex items-center justify-between text-xs font-mono tabular-nums text-zinc-500 dark:text-zinc-400">
+                    <span>Elapsed: {formatHMS(elapsedMs)}</span>
+                    <span>
+                      Target: {formatStudyMinutes(targetProgress.targetMinutes)} ({targetProgress.progressPct}%)
+                    </span>
+                  </div>
+                </div>
+
+                {notifPermission === 'default' && !targetProgress.isOvertime && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRequestDesktopNotification()}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
+                  >
+                    <Bell className="w-3 h-3" />
+                    <span>Enable desktop alert when countdown reaches zero</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="text-5xl sm:text-7xl font-mono font-bold tabular-nums tracking-tight text-zinc-950 dark:text-zinc-50">
+                  {formatHMS(elapsedMs)}
+                </div>
+                <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-2">
+                  Actual focused time (excluding paused intervals)
+                </p>
+              </>
+            )}
           </div>
 
           {/* Primary Controls */}
@@ -248,6 +380,15 @@ export function StudyTimerView() {
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>Finish Session</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void toggleFloatingTimer()}
+              className="flex items-center justify-center gap-2 px-4 py-3 min-h-[44px] rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sm font-semibold transition whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <PictureInPicture2 className="w-4 h-4" />
+              <span>{isFloatingOpen ? 'Close Mini Screen' : 'Pop Out Mini Timer'}</span>
             </button>
 
             <button
@@ -408,7 +549,10 @@ export function StudyTimerView() {
               ) : (
                 <select
                   value={effectiveSelectedTaskId}
-                  onChange={(e) => setSelectedTaskId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedTaskId(e.target.value);
+                    setTargetMode('auto');
+                  }}
                   className="w-full px-3.5 py-2.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
                 >
                   {studyTodos.map((t) => (
@@ -439,6 +583,101 @@ export function StudyTimerView() {
             </div>
           )}
 
+          {/* Optional Target Countdown Duration */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                <Hourglass className="w-3.5 h-3.5 text-sky-500" />
+                Target Duration / Time Left Countdown (Optional)
+              </label>
+              {resolvedSetupTargetMinutes ? (
+                <span className="text-[11px] font-medium text-sky-600 dark:text-sky-400">
+                  Countdown: {formatStudyMinutes(resolvedSetupTargetMinutes)}
+                  {targetMode === 'auto' && selectedLinkedTask?.estimatedDurationMinutes
+                    ? ' (from task)'
+                    : ''}
+                </span>
+              ) : (
+                <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                  Open-ended elapsed count-up
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setTargetMode('none')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  resolvedSetupTargetMinutes === null && targetMode !== 'custom'
+                    ? 'bg-sky-600 text-white'
+                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                }`}
+              >
+                No Target
+              </button>
+
+              {STUDY_DURATION_PRESETS.map((preset) => {
+                const isActivePreset =
+                  (targetMode === 'preset' && presetTargetMinutes === preset.minutes) ||
+                  (targetMode === 'auto' && resolvedSetupTargetMinutes === preset.minutes);
+                return (
+                  <button
+                    key={preset.minutes}
+                    type="button"
+                    onClick={() => {
+                      setTargetMode('preset');
+                      setPresetTargetMinutes(preset.minutes);
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      isActivePreset
+                        ? 'bg-sky-600 text-white'
+                        : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (resolvedSetupTargetMinutes) {
+                    setCustomTargetMinutes(String(resolvedSetupTargetMinutes));
+                  }
+                  setTargetMode('custom');
+                }}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  targetMode === 'custom' ||
+                  (targetMode === 'auto' &&
+                    resolvedSetupTargetMinutes !== null &&
+                    !STUDY_DURATION_PRESETS.some((p) => p.minutes === resolvedSetupTargetMinutes))
+                    ? 'bg-sky-600 text-white'
+                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                }`}
+              >
+                Custom
+              </button>
+            </div>
+
+            {targetMode === 'custom' && (
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={customTargetMinutes}
+                  onChange={(e) => setCustomTargetMinutes(e.target.value)}
+                  className="w-28 px-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm font-mono text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  minutes (1 – 1440)
+                </span>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 mb-1.5">
               Initial Session Notes (Optional)
@@ -454,7 +693,7 @@ export function StudyTimerView() {
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              Timer stays visible in the header while you browse other Life OS pages.
+              Float your timer in an always-on-top mini window anytime while watching lectures or multitasking.
             </span>
             <button
               type="submit"
@@ -519,6 +758,14 @@ export function StudyTimerView() {
                       <Clock className="w-3 h-3" />
                       {formatTimeOfDay(session.startTimestamp)} – {formatTimeOfDay(session.endTimestamp)}
                     </span>
+                    {session.targetDurationMinutes && (
+                      <>
+                        <span>·</span>
+                        <span className="font-mono tabular-nums">
+                          Target {formatStudyMinutes(session.targetDurationMinutes)}
+                        </span>
+                      </>
+                    )}
                     {session.pauseCount > 0 && (
                       <>
                         <span>·</span>

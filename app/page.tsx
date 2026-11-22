@@ -19,6 +19,7 @@ import { StudyTimerView } from '@/components/study/StudyTimerView';
 import { StopwatchView } from '@/components/study/StopwatchView';
 import { StudyAnalyticsView } from '@/components/study/StudyAnalyticsView';
 import { StudyNotesView } from '@/components/study/StudyNotesView';
+import { StudyTimerPiPProvider } from '@/components/study/StudyTimerPiPContext';
 import { HabitModal } from '@/components/modals/HabitModal';
 import { TodoModal } from '@/components/modals/TodoModal';
 import { HabitHistoryModal } from '@/components/modals/HabitHistoryModal';
@@ -567,7 +568,9 @@ function LifeOSAppContent() {
 export default function HomePage() {
   return (
     <LifeOSProvider>
-      <LifeOSAppContent />
+      <StudyTimerPiPProvider>
+        <LifeOSAppContent />
+      </StudyTimerPiPProvider>
     </LifeOSProvider>
   );
 }

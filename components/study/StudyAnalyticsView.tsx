@@ -32,7 +32,7 @@ export function StudyAnalyticsView() {
   const { getStudyAnalytics } = useLifeOS();
   const todayKey = getTodayKey();
 
-  const [range, setRange] = useState<StudyAnalyticsRange>('weekly');
+  const [range, setRange] = useState<StudyAnalyticsRange>('daily');
   const [customStart, setCustomStart] = useState<string>(() => addDays(todayKey, -13));
   const [customEnd, setCustomEnd] = useState<string>(() => todayKey);
   const [hoveredBucket, setHoveredBucket] = useState<StudyDailyMetric | null>(null);
@@ -79,7 +79,13 @@ export function StudyAnalyticsView() {
             <span>Study Analytics</span>
           </h1>
           <p className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-            Comparing planned Study To-Dos, estimated completion, and actual timer sessions ({formatDisplayDate(analytics.startDate)} – {formatDisplayDate(analytics.endDate)})
+            Comparing planned Study To-Dos, estimated completion, and actual timer sessions (
+            {analytics.startDate === analytics.endDate
+              ? analytics.startDate === todayKey
+                ? `Today · ${formatDisplayDate(analytics.startDate)}`
+                : formatDisplayDate(analytics.startDate)
+              : `${formatDisplayDate(analytics.startDate)} – ${formatDisplayDate(analytics.endDate)}`}
+            )
           </p>
         </div>
 
@@ -132,6 +138,48 @@ export function StudyAnalyticsView() {
           <strong>Planned Study</strong> sums estimates from Study To-Dos; <strong>Est. Completed</strong> sums estimates for checked-off Study To-Dos; <strong>Actual Studied</strong> tracks completed Study Timer sessions (and manually converted Stopwatch sessions). Non-Study tasks and unconverted Stopwatch runs are excluded.
         </span>
       </div>
+
+      {/* Today's Study Overview Banner (shown in Daily view) */}
+      {range === 'daily' && (() => {
+        const plannedMs = analytics.plannedMinutes * 60000;
+        const leftMs = Math.max(0, plannedMs - analytics.actualStudiedMs);
+        const dailyPct =
+          plannedMs > 0
+            ? Math.min(100, Math.round((analytics.actualStudiedMs / plannedMs) * 100))
+            : analytics.studyTasksTotal > 0
+              ? Math.round((analytics.studyTasksCompleted / analytics.studyTasksTotal) * 100)
+              : 0;
+
+        return (
+          <div className="p-4 sm:p-5 rounded-2xl sm:rounded-3xl bg-white dark:bg-zinc-900 border border-sky-200/80 dark:border-sky-900/60 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm sm:text-base font-bold text-zinc-900 dark:text-zinc-100">
+                  Today&apos;s Study Plan ({formatDisplayDate(todayKey)})
+                </h2>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  {analytics.plannedMinutes > 0
+                    ? leftMs > 0
+                      ? `${formatStudyDurationMs(leftMs)} remaining to hit today's ${formatStudyMinutes(analytics.plannedMinutes)} target`
+                      : `Daily target of ${formatStudyMinutes(analytics.plannedMinutes)} achieved`
+                    : analytics.studyTasksTotal > 0
+                      ? `${analytics.studyTasksTotal - analytics.studyTasksCompleted} open Study To-Do remaining today (add duration estimates in To-Dos to track a minute goal)`
+                      : 'No Study To-Dos scheduled for today yet — add one in To-Dos or start a Study Timer session.'}
+                </p>
+              </div>
+              <div className="font-mono font-bold tabular-nums text-sm sm:text-base text-sky-600 dark:text-sky-400 shrink-0">
+                {dailyPct}% complete
+              </div>
+            </div>
+
+            <progress
+              value={dailyPct}
+              max={100}
+              className="w-full h-2.5 rounded-full overflow-hidden appearance-none [&::-webkit-progress-bar]:bg-zinc-100 dark:[&::-webkit-progress-bar]:bg-zinc-800 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-sky-500 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:transition-all"
+            />
+          </div>
+        );
+      })()}
 
       {/* 4 KPI Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -251,10 +299,14 @@ export function StudyAnalyticsView() {
                   key={bucket.dateKey}
                   onMouseEnter={() => setHoveredBucket(bucket)}
                   onMouseLeave={() => setHoveredBucket(null)}
-                  className="flex-1 h-full flex items-end justify-center gap-0.5 sm:gap-1 cursor-pointer group"
+                  className={`flex-1 h-full flex items-end justify-center cursor-pointer group ${
+                    analytics.buckets.length === 1 ? 'gap-3 sm:gap-5' : 'gap-0.5 sm:gap-1'
+                  }`}
                 >
                   <div
-                    className={`w-1.5 sm:w-2.5 rounded-t transition-all ${
+                    className={`${
+                      analytics.buckets.length === 1 ? 'w-10 sm:w-14' : 'w-1.5 sm:w-2.5'
+                    } rounded-t transition-all ${
                       bucket.plannedMinutes > 0
                         ? 'bg-zinc-300 dark:bg-zinc-600 group-hover:bg-zinc-400'
                         : 'bg-zinc-100 dark:bg-zinc-800/50'
@@ -262,7 +314,9 @@ export function StudyAnalyticsView() {
                     style={{ height: `${planH}%` }}
                   />
                   <div
-                    className={`w-1.5 sm:w-2.5 rounded-t transition-all ${
+                    className={`${
+                      analytics.buckets.length === 1 ? 'w-10 sm:w-14' : 'w-1.5 sm:w-2.5'
+                    } rounded-t transition-all ${
                       bucket.estimatedCompletedMinutes > 0
                         ? 'bg-emerald-500 group-hover:bg-emerald-400'
                         : 'bg-zinc-100 dark:bg-zinc-800/50'
@@ -270,7 +324,9 @@ export function StudyAnalyticsView() {
                     style={{ height: `${estH}%` }}
                   />
                   <div
-                    className={`w-1.5 sm:w-2.5 rounded-t transition-all ${
+                    className={`${
+                      analytics.buckets.length === 1 ? 'w-10 sm:w-14' : 'w-1.5 sm:w-2.5'
+                    } rounded-t transition-all ${
                       bucket.actualStudiedMs > 0
                         ? 'bg-sky-500 group-hover:bg-sky-400'
                         : 'bg-zinc-100 dark:bg-zinc-800/50'
@@ -372,7 +428,11 @@ export function StudyAnalyticsView() {
 
         {analytics.sessions.length === 0 ? (
           <p className="text-xs text-zinc-400 dark:text-zinc-500 py-4">
-            No completed sessions inside {formatDisplayDate(analytics.startDate)} – {formatDisplayDate(analytics.endDate)}.
+            No completed sessions inside{' '}
+            {analytics.startDate === analytics.endDate
+              ? formatDisplayDate(analytics.startDate)
+              : `${formatDisplayDate(analytics.startDate)} – ${formatDisplayDate(analytics.endDate)}`}
+            .
           </p>
         ) : (
           <div className="space-y-2">

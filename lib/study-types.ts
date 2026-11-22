@@ -56,6 +56,7 @@ export interface StudySession {
   pauseCount: number;
   totalPausedMs: number;
   pauseIntervals?: StudyPauseInterval[];
+  targetDurationMinutes?: number;
   notes?: string;
   status: StudySessionStatus;
   source: StudySessionSource;
@@ -79,6 +80,8 @@ export interface ActiveStudyTimerState {
   pauseCount: number;
   pauseIntervals?: StudyPauseInterval[];
   totalPausedMs: number;
+  targetDurationMinutes?: number | null;
+  targetReachedAlertedAt?: number;
   notes: string;
   status: 'running' | 'paused';
   updatedAt: string;

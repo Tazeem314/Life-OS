@@ -73,6 +73,70 @@ export function formatHMSCentiseconds(ms: number): { main: string; centiseconds:
   };
 }
 
+export interface StudyTargetProgress {
+  hasTarget: boolean;
+  targetMinutes: number;
+  targetMs: number;
+  remainingMs: number;
+  overtimeMs: number;
+  isOvertime: boolean;
+  progressPct: number;
+  primaryTimeLabel: string;
+}
+
+/**
+ * Computes remaining countdown time, overtime, progress %, and primary display string
+ * from elapsed milliseconds and an optional target duration in minutes.
+ */
+export function computeStudyTargetProgress(
+  elapsedMs: number,
+  targetDurationMinutes?: number | null
+): StudyTargetProgress {
+  const safeElapsed = Math.max(0, elapsedMs || 0);
+  const validTargetMins =
+    typeof targetDurationMinutes === 'number' &&
+    Number.isFinite(targetDurationMinutes) &&
+    targetDurationMinutes > 0
+      ? Math.round(targetDurationMinutes)
+      : 0;
+
+  if (validTargetMins <= 0) {
+    return {
+      hasTarget: false,
+      targetMinutes: 0,
+      targetMs: 0,
+      remainingMs: 0,
+      overtimeMs: 0,
+      isOvertime: false,
+      progressPct: 0,
+      primaryTimeLabel: formatHMS(safeElapsed),
+    };
+  }
+
+  const targetMs = validTargetMins * 60000;
+  const isOvertime = safeElapsed >= targetMs;
+  const remainingMs = isOvertime ? 0 : Math.max(0, targetMs - safeElapsed);
+  const overtimeMs = isOvertime ? Math.max(0, safeElapsed - targetMs) : 0;
+  const progressPct = Math.min(100, Math.max(0, Math.round((safeElapsed / targetMs) * 100)));
+
+  // For countdown display, ceil sub-second remainder unless exact 0 so 60:00 drops cleanly to 59:59 at 1s
+  const displayRemainingMs =
+    remainingMs > 0 ? Math.ceil(remainingMs / 1000) * 1000 : 0;
+
+  return {
+    hasTarget: true,
+    targetMinutes: validTargetMins,
+    targetMs,
+    remainingMs,
+    overtimeMs,
+    isOvertime,
+    progressPct,
+    primaryTimeLabel: isOvertime
+      ? `+${formatHMS(overtimeMs)}`
+      : formatHMS(displayRemainingMs),
+  };
+}
+
 /**
  * Formats integer minutes cleanly for study planning & analytics (e.g., "1h 30m", "45m", "0m").
  */

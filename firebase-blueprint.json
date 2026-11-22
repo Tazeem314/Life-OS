@@ -301,6 +301,7 @@
         "actualDurationMinutes": { "type": "number" },
         "pauseCount": { "type": "number" },
         "totalPausedMs": { "type": "number" },
+        "targetDurationMinutes": { "type": "number" },
         "notes": { "type": "string" },
         "status": { "type": "string" },
         "source": { "type": "string" },
@@ -325,6 +326,8 @@
         "totalPausedMs": { "type": "number" },
         "pauseCount": { "type": "number" },
         "pausedAtTimestamp": { "type": "number" },
+        "targetDurationMinutes": { "type": "number" },
+        "targetReachedAlertedAt": { "type": "number" },
         "status": { "type": "string" },
         "notes": { "type": "string" },
         "updatedAt": { "type": "string" }

@@ -64,6 +64,7 @@ import {
   computeActiveStopwatchElapsedMs,
   calculateStudyDashboardSummary,
   calculateStudyAnalytics,
+  formatStudyMinutes,
 } from '@/lib/study-service';
 import { deleteStudyAttachmentFile } from '@/lib/study-storage-service';
 import {
@@ -937,7 +938,8 @@ interface LifeOSContextType {
   startStudyTimer: (
     taskId?: string | null,
     customLabel?: string,
-    notes?: string
+    notes?: string,
+    targetDurationMinutes?: number | null
   ) => { success: boolean; error?: string };
   pauseStudyTimer: () => void;
   resumeStudyTimer: () => void;
@@ -5583,7 +5585,12 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const startStudyTimer = useCallback(
-    (taskId?: string | null, customLabel?: string, notes?: string) => {
+    (
+      taskId?: string | null,
+      customLabel?: string,
+      notes?: string,
+      targetDurationMinutes?: number | null
+    ) => {
       if (activeStudyTimerRef.current) {
         return {
           success: false,
@@ -5597,6 +5604,13 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       const snapshotTitle =
         linkedTask?.title || (customLabel && customLabel.trim()) || 'Unlinked Study Session';
 
+      const normalizedTarget =
+        typeof targetDurationMinutes === 'number' &&
+        Number.isFinite(targetDurationMinutes) &&
+        targetDurationMinutes > 0
+          ? Math.min(1440, Math.max(1, Math.round(targetDurationMinutes)))
+          : undefined;
+
       const timerState: ActiveStudyTimerState = {
         sessionId: `study_${nowMs}_${Math.random().toString(36).substring(2, 7)}`,
         userId: uid,
@@ -5609,6 +5623,7 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         totalPausedMs: 0,
         pauseCount: 0,
         pauseIntervals: [],
+        targetDurationMinutes: normalizedTarget,
         status: 'running',
         notes: notes?.trim() || '',
         updatedAt: nowIso,
@@ -5620,12 +5635,93 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
       showToast({
         type: 'success',
         title: 'Study Timer Started',
-        message: `Tracking "${snapshotTitle}".`,
+        message: normalizedTarget
+          ? `Tracking "${snapshotTitle}" (${formatStudyMinutes(normalizedTarget)} target).`
+          : `Tracking "${snapshotTitle}".`,
       });
       return { success: true };
     },
     [persistActiveStudyTimer, syncToCloudNow, showToast]
   );
+
+  // Monitor active study timer countdown target -> play chime & notify once, then count overtime
+  useEffect(() => {
+    if (
+      !activeStudyTimer ||
+      activeStudyTimer.status !== 'running' ||
+      !activeStudyTimer.targetDurationMinutes ||
+      activeStudyTimer.targetDurationMinutes <= 0 ||
+      activeStudyTimer.targetReachedAlertedAt
+    ) {
+      return;
+    }
+
+    const targetMs = activeStudyTimer.targetDurationMinutes * 60000;
+
+    const checkAndNotifyTarget = () => {
+      const current = activeStudyTimerRef.current;
+      if (
+        !current ||
+        current.status !== 'running' ||
+        !current.targetDurationMinutes ||
+        current.targetDurationMinutes <= 0 ||
+        current.targetReachedAlertedAt
+      ) {
+        return;
+      }
+      const nowMs = Date.now();
+      const elapsed = computeActiveStudyElapsedMs(current, nowMs);
+      if (elapsed >= current.targetDurationMinutes * 60000) {
+        const updated: ActiveStudyTimerState = {
+          ...current,
+          targetReachedAlertedAt: nowMs,
+          updatedAt: new Date(nowMs).toISOString(),
+        };
+        persistActiveStudyTimer(updated);
+        syncToCloudNow((activeUid) => syncActiveStudyTimerToCloud(activeUid, updated));
+
+        playNotificationSound();
+        window.setTimeout(() => playNotificationSound(), 220);
+
+        const targetLabel = formatStudyMinutes(current.targetDurationMinutes);
+        showToast({
+          type: 'success',
+          title: `Study Target Reached (${targetLabel})`,
+          message: `"${current.taskNameSnapshot}" reached ${targetLabel}. Continuing into overtime.`,
+        });
+
+        if (
+          typeof window !== 'undefined' &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          try {
+            new Notification(`Study Target Reached (${targetLabel})`, {
+              body: `${current.taskNameSnapshot} reached ${targetLabel}. Timer is now tracking overtime.`,
+              icon: '/favicon.png',
+              tag: `study-target-${current.sessionId}`,
+            });
+          } catch {}
+        }
+      }
+    };
+
+    const elapsedNow = computeActiveStudyElapsedMs(activeStudyTimer, Date.now());
+    const remainingMs = Math.max(0, targetMs - elapsedNow);
+    const timeoutId = window.setTimeout(checkAndNotifyTarget, remainingMs + 60);
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndNotifyTarget();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [activeStudyTimer, persistActiveStudyTimer, syncToCloudNow, showToast]);
 
   const pauseStudyTimer = useCallback(() => {
     const current = activeStudyTimerRef.current;
@@ -5708,6 +5804,10 @@ export function LifeOSProvider({ children }: { children: React.ReactNode }) {
         pauseCount: current.pauseCount,
         totalPausedMs: current.totalPausedMs + extraPaused,
         pauseIntervals: current.pauseIntervals || [],
+        targetDurationMinutes:
+          typeof current.targetDurationMinutes === 'number' && current.targetDurationMinutes > 0
+            ? current.targetDurationMinutes
+            : undefined,
         notes: (overrideNotes !== undefined ? overrideNotes : current.notes)?.trim() || undefined,
         status: 'completed',
         source: 'timer',

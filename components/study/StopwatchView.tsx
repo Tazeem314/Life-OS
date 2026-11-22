@@ -11,6 +11,7 @@ import {
 } from '@/lib/study-service';
 import { formatDisplayDate } from '@/lib/date-utils';
 import { ConfirmDialog } from '@/components/modals/ConfirmDialog';
+import { useStudyTimerPiP } from '@/components/study/StudyTimerPiPContext';
 import { StopwatchRecord } from '@/lib/types';
 import {
   Gauge,
@@ -26,6 +27,7 @@ import {
   ChevronUp,
   Info,
   X,
+  PictureInPicture2,
 } from 'lucide-react';
 
 export function StopwatchView() {
@@ -43,6 +45,7 @@ export function StopwatchView() {
     convertStopwatchToStudySession,
   } = useLifeOS();
 
+  const { isStopwatchFloatingOpen, toggleFloatingStopwatch } = useStudyTimerPiP();
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [runTitle, setRunTitle] = useState<string>('');
   const [runNotes, setRunNotes] = useState<string>('');
@@ -126,6 +129,49 @@ export function StopwatchView() {
 
       {/* Stopwatch Main Card */}
       <div className="p-5 sm:p-8 bg-white dark:bg-zinc-900 rounded-2xl sm:rounded-3xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs space-y-6">
+        {activeStopwatch && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+                  activeStopwatch.status === 'running'
+                    ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                    : 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    activeStopwatch.status === 'running'
+                      ? 'bg-indigo-500 animate-pulse'
+                      : 'bg-amber-500'
+                  }`}
+                />
+                {activeStopwatch.status === 'running' ? 'Stopwatch Running' : 'Stopwatch Paused'}
+              </span>
+              {activeStopwatch.title && (
+                <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 truncate max-w-[220px]">
+                  {activeStopwatch.title}
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void toggleFloatingStopwatch()}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition cursor-pointer shrink-0 ${
+                isStopwatchFloatingOpen
+                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs hover:bg-indigo-500'
+                  : 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60'
+              }`}
+            >
+              <PictureInPicture2 className="w-3.5 h-3.5" />
+              <span>
+                {isStopwatchFloatingOpen ? 'Floating Mini Stopwatch On' : 'Float Mini Screen'}
+              </span>
+            </button>
+          </div>
+        )}
+
         {/* Elapsed Readout */}
         <div className="py-4 sm:py-6 flex flex-col items-center justify-center text-center">
           <div className="flex items-baseline justify-center font-mono tabular-nums tracking-tight">
@@ -212,6 +258,17 @@ export function StopwatchView() {
               >
                 <Square className="w-4 h-4" />
                 <span>Stop &amp; Save</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void toggleFloatingStopwatch()}
+                className="flex items-center justify-center gap-2 px-4 py-3 min-h-[44px] rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-sm font-semibold transition whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <PictureInPicture2 className="w-4 h-4" />
+                <span>
+                  {isStopwatchFloatingOpen ? 'Close Mini Screen' : 'Pop Out Mini Stopwatch'}
+                </span>
               </button>
 
               <button

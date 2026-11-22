@@ -5,7 +5,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
 import { useLifeOS } from '@/context/LifeOSContext';
 import { ActiveTab } from '@/lib/types';
-import { computeActiveStudyElapsedMs, formatHMS } from '@/lib/study-service';
+import {
+  computeActiveStopwatchElapsedMs,
+  computeActiveStudyElapsedMs,
+  computeStudyTargetProgress,
+  formatHMS,
+} from '@/lib/study-service';
 import {
   LayoutDashboard,
   Sparkles,
@@ -55,6 +60,7 @@ export function Sidebar() {
     sleepAnalytics,
     unreadNotificationsCount,
     activeStudyTimer,
+    activeStopwatch,
     studyNotes,
     user,
     loginWithGoogle,
@@ -71,19 +77,28 @@ export function Sidebar() {
   const isStudyOpen = studyOpenOverride ?? isStudyTabActive;
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
 
+  const isAnyClockRunning =
+    activeStudyTimer?.status === 'running' || activeStopwatch?.status === 'running';
+
   useEffect(() => {
-    if (!activeStudyTimer || activeStudyTimer.status !== 'running') return;
+    if (!isAnyClockRunning) return;
     const id = window.setInterval(() => setTickNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [activeStudyTimer]);
+  }, [isAnyClockRunning]);
 
-  const activeTimerElapsed = activeStudyTimer
-    ? formatHMS(
-        computeActiveStudyElapsedMs(
-          activeStudyTimer,
-          activeStudyTimer.status === 'running' ? tickNow : activeStudyTimer.pausedAtTimestamp || tickNow
-        )
+  const activeTimerElapsedMs = activeStudyTimer
+    ? computeActiveStudyElapsedMs(
+        activeStudyTimer,
+        activeStudyTimer.status === 'running' ? tickNow : activeStudyTimer.pausedAtTimestamp || tickNow
       )
+    : 0;
+  const activeTimerElapsed = activeStudyTimer
+    ? computeStudyTargetProgress(activeTimerElapsedMs, activeStudyTimer.targetDurationMinutes)
+        .primaryTimeLabel
+    : null;
+
+  const activeStopwatchElapsed = activeStopwatch
+    ? formatHMS(computeActiveStopwatchElapsedMs(activeStopwatch, tickNow))
     : null;
 
   const navItemsTop: NavItem[] = [
@@ -207,12 +222,20 @@ export function Sidebar() {
                 }`}
               />
               <span>Study</span>
-              {activeStudyTimer && (
+              {(activeStudyTimer || activeStopwatch) && (
                 <span
                   className={`w-1.5 h-1.5 rounded-full ${
-                    activeStudyTimer.status === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                    activeStudyTimer?.status === 'running' || activeStopwatch?.status === 'running'
+                      ? 'bg-emerald-500 animate-pulse'
+                      : 'bg-amber-500'
                   }`}
-                  title="Active study timer"
+                  title={
+                    activeStudyTimer && activeStopwatch
+                      ? 'Active study timer & stopwatch'
+                      : activeStudyTimer
+                        ? 'Active study timer'
+                        : 'Active stopwatch'
+                  }
                 />
               )}
             </div>
@@ -238,9 +261,11 @@ export function Sidebar() {
                   const badge =
                     sub.id === 'study_timer' && activeTimerElapsed
                       ? activeTimerElapsed
-                      : sub.id === 'study_notes' && studyNotes.length > 0
-                        ? studyNotes.length
-                        : undefined;
+                      : sub.id === 'stopwatch' && activeStopwatchElapsed
+                        ? activeStopwatchElapsed
+                        : sub.id === 'study_notes' && studyNotes.length > 0
+                          ? studyNotes.length
+                          : undefined;
 
                   return (
                     <button
@@ -268,9 +293,11 @@ export function Sidebar() {
                           className={`text-[10px] font-mono tabular-nums font-medium shrink-0 ${
                             sub.id === 'study_timer' && activeStudyTimer?.status === 'running'
                               ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
-                              : isSubActive
-                                ? 'text-sky-700 dark:text-sky-300 font-semibold'
-                                : 'text-zinc-400 dark:text-zinc-500'
+                              : sub.id === 'stopwatch' && activeStopwatch?.status === 'running'
+                                ? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+                                : isSubActive
+                                  ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                                  : 'text-zinc-400 dark:text-zinc-500'
                           }`}
                         >
                           {badge}
