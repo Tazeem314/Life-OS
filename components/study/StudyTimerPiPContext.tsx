@@ -70,6 +70,54 @@ const CORNER_CLASSES: Record<InAppCorner, string> = {
 };
 
 const CORNER_ORDER: InAppCorner[] = ['bottom-right', 'bottom-left', 'top-left', 'top-right'];
+const FLOATING_PREF_STORAGE_KEY = 'life_os_floating_pip_v1';
+
+interface SavedFloatingPref {
+  kind: 'study_timer' | 'stopwatch';
+  targetId: string;
+  preferredTier: 'system' | 'in_app';
+  corner?: InAppCorner;
+  savedAt: number;
+}
+
+function readSavedFloatingPref(): SavedFloatingPref | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(FLOATING_PREF_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedFloatingPref> | null;
+    if (
+      !parsed ||
+      (parsed.kind !== 'study_timer' && parsed.kind !== 'stopwatch') ||
+      typeof parsed.targetId !== 'string' ||
+      !parsed.targetId
+    ) {
+      return null;
+    }
+    const corner: InAppCorner =
+      parsed.corner && CORNER_ORDER.includes(parsed.corner) ? parsed.corner : 'bottom-right';
+    return {
+      kind: parsed.kind,
+      targetId: parsed.targetId,
+      preferredTier: parsed.preferredTier === 'in_app' ? 'in_app' : 'system',
+      corner,
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeSavedFloatingPref(pref: SavedFloatingPref | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!pref) {
+      window.localStorage.removeItem(FLOATING_PREF_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(FLOATING_PREF_STORAGE_KEY, JSON.stringify(pref));
+    }
+  } catch {}
+}
 
 function copyStylesToPiPWindow(targetDoc: Document) {
   const isDark = document.documentElement.classList.contains('dark');
@@ -319,6 +367,7 @@ interface FloatingTimerCardProps {
   onFocusApp: () => void;
   onClose: () => void;
   onCycleCorner?: () => void;
+  onPopToSystemPiP?: () => void;
 }
 
 function FloatingTimerCard({
@@ -330,19 +379,35 @@ function FloatingTimerCard({
   onFocusApp,
   onClose,
   onCycleCorner,
+  onPopToSystemPiP,
 }: FloatingTimerCardProps) {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
-    if (timer.status !== 'running') return;
     const ownerWin = typeof window !== 'undefined' ? window : null;
     if (!ownerWin) return;
 
-    const id = ownerWin.setInterval(() => {
-      setNowMs(Date.now());
-    }, 250);
+    const syncClock = () => {
+      if (document.visibilityState === 'visible') {
+        setNowMs(Date.now());
+      }
+    };
 
-    return () => ownerWin.clearInterval(id);
+    document.addEventListener('visibilitychange', syncClock);
+    ownerWin.addEventListener('pageshow', syncClock);
+
+    const id =
+      timer.status === 'running'
+        ? ownerWin.setInterval(() => {
+            setNowMs(Date.now());
+          }, 250)
+        : null;
+
+    return () => {
+      if (id !== null) ownerWin.clearInterval(id);
+      document.removeEventListener('visibilitychange', syncClock);
+      ownerWin.removeEventListener('pageshow', syncClock);
+    };
   }, [timer.status]);
 
   const elapsedMs = computeActiveStudyElapsedMs(
@@ -389,6 +454,17 @@ function FloatingTimerCard({
         </span>
 
         <div className="flex items-center gap-1 shrink-0">
+          {!isDocPiP && onPopToSystemPiP && (
+            <button
+              type="button"
+              onClick={onPopToSystemPiP}
+              title="Float in system Picture-in-Picture window"
+              aria-label="Float in system Picture-in-Picture window"
+              className="p-1 rounded-lg text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/50 transition cursor-pointer"
+            >
+              <PictureInPicture2 className="w-3.5 h-3.5" />
+            </button>
+          )}
           {!isDocPiP && onCycleCorner && (
             <button
               type="button"
@@ -531,6 +607,7 @@ interface FloatingStopwatchCardProps {
   onFocusApp: () => void;
   onClose: () => void;
   onCycleCorner?: () => void;
+  onPopToSystemPiP?: () => void;
 }
 
 function FloatingStopwatchCard({
@@ -543,19 +620,35 @@ function FloatingStopwatchCard({
   onFocusApp,
   onClose,
   onCycleCorner,
+  onPopToSystemPiP,
 }: FloatingStopwatchCardProps) {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
-    if (stopwatch.status !== 'running') return;
     const ownerWin = typeof window !== 'undefined' ? window : null;
     if (!ownerWin) return;
 
-    const id = ownerWin.setInterval(() => {
-      setNowMs(Date.now());
-    }, 80);
+    const syncClock = () => {
+      if (document.visibilityState === 'visible') {
+        setNowMs(Date.now());
+      }
+    };
 
-    return () => ownerWin.clearInterval(id);
+    document.addEventListener('visibilitychange', syncClock);
+    ownerWin.addEventListener('pageshow', syncClock);
+
+    const id =
+      stopwatch.status === 'running'
+        ? ownerWin.setInterval(() => {
+            setNowMs(Date.now());
+          }, 80)
+        : null;
+
+    return () => {
+      if (id !== null) ownerWin.clearInterval(id);
+      document.removeEventListener('visibilitychange', syncClock);
+      ownerWin.removeEventListener('pageshow', syncClock);
+    };
   }, [stopwatch.status]);
 
   const elapsedMs = computeActiveStopwatchElapsedMs(stopwatch, nowMs);
@@ -594,6 +687,17 @@ function FloatingStopwatchCard({
         </span>
 
         <div className="flex items-center gap-1 shrink-0">
+          {!isDocPiP && onPopToSystemPiP && (
+            <button
+              type="button"
+              onClick={onPopToSystemPiP}
+              title="Float in system Picture-in-Picture window"
+              aria-label="Float in system Picture-in-Picture window"
+              className="p-1 rounded-lg text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition cursor-pointer"
+            >
+              <PictureInPicture2 className="w-3.5 h-3.5" />
+            </button>
+          )}
           {!isDocPiP && onCycleCorner && (
             <button
               type="button"
@@ -727,7 +831,9 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
   const [floatingMode, setFloatingMode] = useState<FloatingTimerMode>('none');
   const [floatingKind, setFloatingKind] = useState<FloatingTargetKind>('none');
   const [docPiPContainer, setDocPiPContainer] = useState<HTMLElement | null>(null);
-  const [inAppCorner, setInAppCorner] = useState<InAppCorner>('bottom-right');
+  const [inAppCorner, setInAppCorner] = useState<InAppCorner>(
+    () => readSavedFloatingPref()?.corner || 'bottom-right'
+  );
 
   const docPiPWinRef = useRef<DocumentPiPWindow | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -735,14 +841,33 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
   const isSyncingVideoRef = useRef<boolean>(false);
   const activeTimerRef = useRef<ActiveStudyTimerState | null>(activeStudyTimer);
   const activeStopwatchRef = useRef<ActiveStopwatchState | null>(activeStopwatch);
+  const floatingModeRef = useRef<FloatingTimerMode>(floatingMode);
+  const floatingKindRef = useRef<FloatingTargetKind>(floatingKind);
+  const wantedPrefRef = useRef<SavedFloatingPref | null>(readSavedFloatingPref());
+  const seenTargetIdsRef = useRef<Set<string>>(new Set());
+  const lastHiddenAtRef = useRef<number>(0);
+  const manualCloseRef = useRef<boolean>(false);
+  const ignoreSystemExitUntilRef = useRef<number>(0);
+  const pendingDismissTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeTimerRef.current = activeStudyTimer;
+    if (activeStudyTimer?.sessionId) {
+      seenTargetIdsRef.current.add(activeStudyTimer.sessionId);
+    }
   }, [activeStudyTimer]);
 
   useEffect(() => {
     activeStopwatchRef.current = activeStopwatch;
+    if (activeStopwatch?.stopwatchId) {
+      seenTargetIdsRef.current.add(activeStopwatch.stopwatchId);
+    }
   }, [activeStopwatch]);
+
+  useEffect(() => {
+    floatingModeRef.current = floatingMode;
+    floatingKindRef.current = floatingKind;
+  }, [floatingMode, floatingKind]);
 
   const supportsSystemPiP = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -750,6 +875,18 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
     return Boolean(
       winWithPiP.documentPictureInPicture || document.pictureInPictureEnabled
     );
+  }, []);
+
+  const clearPendingDismissCheck = useCallback(() => {
+    if (pendingDismissTimerRef.current !== null) {
+      window.clearTimeout(pendingDismissTimerRef.current);
+      pendingDismissTimerRef.current = null;
+    }
+  }, []);
+
+  const persistFloatingPref = useCallback((pref: SavedFloatingPref | null) => {
+    wantedPrefRef.current = pref;
+    writeSavedFloatingPref(pref);
   }, []);
 
   const teardownVideoPiP = useCallback(() => {
@@ -768,6 +905,9 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
   }, []);
 
   const closeFloatingTimer = useCallback(() => {
+    manualCloseRef.current = true;
+    clearPendingDismissCheck();
+    persistFloatingPref(null);
     if (docPiPWinRef.current) {
       try {
         docPiPWinRef.current.close();
@@ -778,15 +918,19 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
     setDocPiPContainer(null);
     setFloatingMode('none');
     setFloatingKind('none');
-  }, [teardownVideoPiP]);
+  }, [clearPendingDismissCheck, persistFloatingPref, teardownVideoPiP]);
 
-  // Automatically close floating PiP windows if the floating target finishes, resets, or cancels
+  // Automatically close floating PiP windows if the active target finishes, resets, or cancels
   useEffect(() => {
-    const missingTarget =
+    const missingOpenTarget =
       (floatingKind === 'study_timer' && !activeStudyTimer) ||
       (floatingKind === 'stopwatch' && !activeStopwatch);
 
-    if (!missingTarget || floatingMode === 'none') return;
+    if (!missingOpenTarget || floatingMode === 'none') return;
+
+    manualCloseRef.current = true;
+    clearPendingDismissCheck();
+    persistFloatingPref(null);
 
     if (docPiPWinRef.current) {
       try {
@@ -803,7 +947,15 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
     }, 0);
 
     return () => window.clearTimeout(resetTimer);
-  }, [activeStudyTimer, activeStopwatch, floatingKind, floatingMode, teardownVideoPiP]);
+  }, [
+    activeStudyTimer,
+    activeStopwatch,
+    floatingKind,
+    floatingMode,
+    clearPendingDismissCheck,
+    persistFloatingPref,
+    teardownVideoPiP,
+  ]);
 
   // Keep Document PiP dark/light class synced with main document
   useEffect(() => {
@@ -911,26 +1063,90 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
     resumeStopwatch,
   ]);
 
+  const handleUnexpectedSystemPiPExit = useCallback(
+    (kind: 'study_timer' | 'stopwatch') => {
+      if (manualCloseRef.current) {
+        manualCloseRef.current = false;
+        return;
+      }
+      if (Date.now() < ignoreSystemExitUntilRef.current) {
+        return;
+      }
+
+      clearPendingDismissCheck();
+
+      const applySleepFallbackOrClose = () => {
+        const hiddenOrRecentlyHidden =
+          document.visibilityState === 'hidden' || Date.now() - lastHiddenAtRef.current < 2500;
+        const targetStillActive =
+          (kind === 'study_timer' && Boolean(activeTimerRef.current)) ||
+          (kind === 'stopwatch' && Boolean(activeStopwatchRef.current));
+
+        if (hiddenOrRecentlyHidden && targetStillActive) {
+          // Screen timed out, locked, or app backgrounded: keep mini popup mounted in-app
+          // so unlocking the phone display immediately shows the live mini popup again.
+          setFloatingKind(kind);
+          setFloatingMode('in_app');
+        } else {
+          // User explicitly closed the OS PiP window while screen was active.
+          persistFloatingPref(null);
+          setFloatingMode('none');
+          setFloatingKind('none');
+        }
+      };
+
+      if (document.visibilityState === 'hidden') {
+        applySleepFallbackOrClose();
+      } else {
+        // Mobile browsers often fire PiP exit slightly before visibilityState flips to hidden.
+        pendingDismissTimerRef.current = window.setTimeout(() => {
+          pendingDismissTimerRef.current = null;
+          applySleepFallbackOrClose();
+        }, 250);
+      }
+    },
+    [clearPendingDismissCheck, persistFloatingPref]
+  );
+
   const launchPiPForKind = useCallback(
-    async (kind: 'study_timer' | 'stopwatch') => {
+    async (
+      kind: 'study_timer' | 'stopwatch',
+      options?: { isAutoRestore?: boolean; preferredTier?: 'system' | 'in_app' }
+    ) => {
+      const isAutoRestore = Boolean(options?.isAutoRestore);
       const timer = activeTimerRef.current;
       const stopwatch = activeStopwatchRef.current;
 
       if (kind === 'study_timer' && !timer) {
-        showToast({
-          type: 'info',
-          title: 'No Active Study Timer',
-          message: 'Start a Study Timer session first before popping out the mini screen.',
-        });
+        if (!isAutoRestore) {
+          showToast({
+            type: 'info',
+            title: 'No Active Study Timer',
+            message: 'Start a Study Timer session first before popping out the mini screen.',
+          });
+        }
         return;
       }
       if (kind === 'stopwatch' && !stopwatch) {
-        showToast({
-          type: 'info',
-          title: 'Stopwatch Not Started',
-          message: 'Start the Stopwatch first before popping out the mini screen.',
-        });
+        if (!isAutoRestore) {
+          showToast({
+            type: 'info',
+            title: 'Stopwatch Not Started',
+            message: 'Start the Stopwatch first before popping out the mini screen.',
+          });
+        }
         return;
+      }
+
+      const targetId =
+        kind === 'study_timer' ? timer!.sessionId : stopwatch!.stopwatchId;
+      const desiredTier = options?.preferredTier ?? 'system';
+
+      manualCloseRef.current = false;
+      clearPendingDismissCheck();
+
+      if (docPiPWinRef.current || document.pictureInPictureElement) {
+        ignoreSystemExitUntilRef.current = Date.now() + 800;
       }
 
       if (docPiPWinRef.current) {
@@ -943,95 +1159,205 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
 
       const winWithPiP = window as WindowWithDocumentPiP;
 
-      // Tier 1: Interactive Document Picture-in-Picture (Chrome / Edge / Brave Desktop)
-      if (winWithPiP.documentPictureInPicture?.requestWindow) {
-        try {
-          const pipWin = await winWithPiP.documentPictureInPicture.requestWindow({
-            width: 340,
-            height: 224,
-          });
-          copyStylesToPiPWindow(pipWin.document);
-          pipWin.document.title =
-            kind === 'study_timer' && timer
-              ? `${timer.taskNameSnapshot} · Life OS Study Timer`
-              : `${stopwatch?.title?.trim() || 'Stopwatch'} · Life OS`;
+      if (desiredTier === 'system') {
+        // Tier 1: Interactive Document Picture-in-Picture (Chrome / Edge / Brave Desktop)
+        if (winWithPiP.documentPictureInPicture?.requestWindow) {
+          try {
+            const pipWin = await winWithPiP.documentPictureInPicture.requestWindow({
+              width: 340,
+              height: 224,
+            });
+            copyStylesToPiPWindow(pipWin.document);
+            pipWin.document.title =
+              kind === 'study_timer' && timer
+                ? `${timer.taskNameSnapshot} · Life OS Study Timer`
+                : `${stopwatch?.title?.trim() || 'Stopwatch'} · Life OS`;
 
-          const container = pipWin.document.createElement('div');
-          container.id = 'lifeos-study-pip-root';
-          pipWin.document.body.appendChild(container);
+            const container = pipWin.document.createElement('div');
+            container.id = 'lifeos-study-pip-root';
+            pipWin.document.body.appendChild(container);
 
-          pipWin.addEventListener('pagehide', () => {
-            docPiPWinRef.current = null;
-            setDocPiPContainer(null);
-            setFloatingMode('none');
-            setFloatingKind('none');
-          });
+            pipWin.addEventListener('pagehide', () => {
+              docPiPWinRef.current = null;
+              setDocPiPContainer(null);
+              handleUnexpectedSystemPiPExit(kind);
+            });
 
-          docPiPWinRef.current = pipWin;
-          setDocPiPContainer(container);
-          setFloatingKind(kind);
-          setFloatingMode('document_pip');
-          return;
-        } catch {
-          // Fall through to Video PiP fallback
-        }
-      }
-
-      // Tier 2: Canvas-stream Video Picture-in-Picture fallback
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-      if (
-        canvas &&
-        video &&
-        document.pictureInPictureEnabled &&
-        typeof video.requestPictureInPicture === 'function' &&
-        typeof canvas.captureStream === 'function'
-      ) {
-        try {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const isDark = document.documentElement.classList.contains('dark');
-            if (kind === 'study_timer' && timer) {
-              const elapsedMs = computeActiveStudyElapsedMs(
-                timer,
-                timer.status === 'running' ? Date.now() : timer.pausedAtTimestamp || Date.now()
-              );
-              drawStudyTimerToCanvas(ctx, canvas.width, canvas.height, timer, elapsedMs, isDark);
-            } else if (kind === 'stopwatch' && stopwatch) {
-              const elapsedMs = computeActiveStopwatchElapsedMs(stopwatch, Date.now());
-              drawStopwatchToCanvas(ctx, canvas.width, canvas.height, stopwatch, elapsedMs, isDark);
-            }
+            docPiPWinRef.current = pipWin;
+            setDocPiPContainer(container);
+            setFloatingKind(kind);
+            setFloatingMode('document_pip');
+            persistFloatingPref({
+              kind,
+              targetId,
+              preferredTier: 'system',
+              corner: inAppCorner,
+              savedAt: Date.now(),
+            });
+            return;
+          } catch {
+            // Fall through to Video PiP fallback
           }
+        }
 
-          const stream = canvas.captureStream(kind === 'stopwatch' ? 8 : 2);
-          video.srcObject = stream;
-          await video.play();
-          await video.requestPictureInPicture();
+        // Tier 2: Canvas-stream Video Picture-in-Picture fallback
+        const canvas = canvasRef.current;
+        const video = videoRef.current;
+        if (
+          canvas &&
+          video &&
+          document.pictureInPictureEnabled &&
+          typeof video.requestPictureInPicture === 'function' &&
+          typeof canvas.captureStream === 'function'
+        ) {
+          try {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              const isDark = document.documentElement.classList.contains('dark');
+              if (kind === 'study_timer' && timer) {
+                const elapsedMs = computeActiveStudyElapsedMs(
+                  timer,
+                  timer.status === 'running' ? Date.now() : timer.pausedAtTimestamp || Date.now()
+                );
+                drawStudyTimerToCanvas(ctx, canvas.width, canvas.height, timer, elapsedMs, isDark);
+              } else if (kind === 'stopwatch' && stopwatch) {
+                const elapsedMs = computeActiveStopwatchElapsedMs(stopwatch, Date.now());
+                drawStopwatchToCanvas(ctx, canvas.width, canvas.height, stopwatch, elapsedMs, isDark);
+              }
+            }
 
-          setFloatingKind(kind);
-          setFloatingMode('video_pip');
-          return;
-        } catch {
-          teardownVideoPiP();
-          // Fall through to In-App floating mini widget fallback
+            const stream = canvas.captureStream(kind === 'stopwatch' ? 8 : 2);
+            video.srcObject = stream;
+            await video.play();
+            await video.requestPictureInPicture();
+
+            setFloatingKind(kind);
+            setFloatingMode('video_pip');
+            persistFloatingPref({
+              kind,
+              targetId,
+              preferredTier: 'system',
+              corner: inAppCorner,
+              savedAt: Date.now(),
+            });
+            return;
+          } catch {
+            teardownVideoPiP();
+            // Fall through to In-App floating mini widget fallback
+          }
         }
       }
 
-      // Tier 3: In-App floating widget fallback when browser/iframe restricts system PiP
+      // Tier 3: In-App floating widget fallback (also keeps popup open seamlessly after mobile screen wake)
       setFloatingKind(kind);
       setFloatingMode('in_app');
-      showToast({
-        type: 'info',
-        title:
-          kind === 'stopwatch'
-            ? 'In-App Mini Stopwatch Opened'
-            : 'In-App Mini Timer Opened',
-        message:
-          'System Picture-in-Picture is blocked in this browser or frame. Open Life OS in a standalone Chrome/Edge tab to float over other apps.',
+      persistFloatingPref({
+        kind,
+        targetId,
+        preferredTier: isAutoRestore ? desiredTier : 'in_app',
+        corner: inAppCorner,
+        savedAt: Date.now(),
       });
+
+      if (!isAutoRestore) {
+        showToast({
+          type: 'info',
+          title:
+            kind === 'stopwatch'
+              ? 'In-App Mini Stopwatch Opened'
+              : 'In-App Mini Timer Opened',
+          message:
+            'Mini popup stays open automatically when you wake your screen. Use a standalone Chrome/Edge tab for floating over other apps.',
+        });
+      }
     },
-    [showToast, teardownVideoPiP]
+    [
+      clearPendingDismissCheck,
+      handleUnexpectedSystemPiPExit,
+      inAppCorner,
+      persistFloatingPref,
+      showToast,
+      teardownVideoPiP,
+    ]
   );
+
+  // Track screen sleep/lock and auto-restore floating popup immediately on unlock / page load
+  useEffect(() => {
+    const attemptRestoreSavedPopup = () => {
+      if (document.visibilityState === 'hidden') return;
+      const saved = wantedPrefRef.current || readSavedFloatingPref();
+      if (!saved) return;
+
+      const timer = activeTimerRef.current;
+      const stopwatch = activeStopwatchRef.current;
+      const matchesTarget =
+        (saved.kind === 'study_timer' && timer?.sessionId === saved.targetId) ||
+        (saved.kind === 'stopwatch' && stopwatch?.stopwatchId === saved.targetId);
+
+      if (!matchesTarget) return;
+
+      if (floatingModeRef.current === 'none' || floatingKindRef.current !== saved.kind) {
+        void launchPiPForKind(saved.kind, {
+          isAutoRestore: true,
+          preferredTier: saved.preferredTier,
+        });
+      } else if (floatingModeRef.current === 'video_pip') {
+        const video = videoRef.current;
+        const status =
+          saved.kind === 'study_timer' ? timer?.status : stopwatch?.status;
+        if (video && status === 'running' && video.paused) {
+          video.play().catch(() => {});
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAtRef.current = Date.now();
+      } else {
+        attemptRestoreSavedPopup();
+      }
+    };
+
+    const handlePageHide = () => {
+      lastHiddenAtRef.current = Date.now();
+    };
+
+    const handleWake = () => {
+      attemptRestoreSavedPopup();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pageshow', handleWake);
+    window.addEventListener('focus', handleWake);
+
+    // Trigger restoration once activeStudyTimer / activeStopwatch hydrates from localStorage
+    const hydrateRestoreTimer = window.setTimeout(attemptRestoreSavedPopup, 30);
+
+    // Clean up stale saved popup preference if matching timer/stopwatch is no longer active after hydration
+    const staleCheckTimer = window.setTimeout(() => {
+      const saved = wantedPrefRef.current;
+      if (!saved) return;
+      const timer = activeTimerRef.current;
+      const stopwatch = activeStopwatchRef.current;
+      const stillMatches =
+        (saved.kind === 'study_timer' && timer?.sessionId === saved.targetId) ||
+        (saved.kind === 'stopwatch' && stopwatch?.stopwatchId === saved.targetId);
+      if (!stillMatches) {
+        persistFloatingPref(null);
+      }
+    }, 1500);
+
+    return () => {
+      window.clearTimeout(hydrateRestoreTimer);
+      window.clearTimeout(staleCheckTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('pageshow', handleWake);
+      window.removeEventListener('focus', handleWake);
+    };
+  }, [activeStudyTimer, activeStopwatch, launchPiPForKind, persistFloatingPref]);
 
   const openFloatingTimer = useCallback(async () => {
     await launchPiPForKind('study_timer');
@@ -1074,9 +1400,13 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
   const handleCycleCorner = useCallback(() => {
     setInAppCorner((prev) => {
       const idx = CORNER_ORDER.indexOf(prev);
-      return CORNER_ORDER[(idx + 1) % CORNER_ORDER.length];
+      const next = CORNER_ORDER[(idx + 1) % CORNER_ORDER.length];
+      if (wantedPrefRef.current) {
+        persistFloatingPref({ ...wantedPrefRef.current, corner: next });
+      }
+      return next;
     });
-  }, []);
+  }, [persistFloatingPref]);
 
   const handleVideoPlay = useCallback(() => {
     if (isSyncingVideoRef.current || floatingMode !== 'video_pip') return;
@@ -1089,6 +1419,13 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
 
   const handleVideoPause = useCallback(() => {
     if (isSyncingVideoRef.current || floatingMode !== 'video_pip') return;
+    // Ignore automatic media pauses triggered when the mobile display locks or goes background
+    if (
+      document.visibilityState === 'hidden' ||
+      Date.now() - lastHiddenAtRef.current < 1500
+    ) {
+      return;
+    }
     if (floatingKind === 'study_timer' && activeTimerRef.current?.status === 'running') {
       pauseStudyTimer();
     } else if (floatingKind === 'stopwatch' && activeStopwatchRef.current?.status === 'running') {
@@ -1097,10 +1434,18 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
   }, [floatingMode, floatingKind, pauseStudyTimer, pauseStopwatch]);
 
   const handleLeaveVideoPiP = useCallback(() => {
+    const kindLeaving =
+      floatingKindRef.current === 'study_timer' || floatingKindRef.current === 'stopwatch'
+        ? floatingKindRef.current
+        : null;
     teardownVideoPiP();
-    setFloatingMode('none');
-    setFloatingKind('none');
-  }, [teardownVideoPiP]);
+    if (kindLeaving) {
+      handleUnexpectedSystemPiPExit(kindLeaving);
+    } else {
+      setFloatingMode('none');
+      setFloatingKind('none');
+    }
+  }, [handleUnexpectedSystemPiPExit, teardownVideoPiP]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -1223,6 +1568,13 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
             onFocusApp={handleFocusTimerApp}
             onClose={closeFloatingTimer}
             onCycleCorner={handleCycleCorner}
+            onPopToSystemPiP={
+              supportsSystemPiP
+                ? () => {
+                    void launchPiPForKind('study_timer', { preferredTier: 'system' });
+                  }
+                : undefined
+            }
           />
           <div className="mt-1 flex items-center justify-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
             <PictureInPicture2 className="w-3 h-3" />
@@ -1248,6 +1600,13 @@ export function StudyTimerPiPProvider({ children }: { children: React.ReactNode 
             onFocusApp={handleFocusStopwatchApp}
             onClose={closeFloatingTimer}
             onCycleCorner={handleCycleCorner}
+            onPopToSystemPiP={
+              supportsSystemPiP
+                ? () => {
+                    void launchPiPForKind('stopwatch', { preferredTier: 'system' });
+                  }
+                : undefined
+            }
           />
           <div className="mt-1 flex items-center justify-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
             <PictureInPicture2 className="w-3 h-3" />
